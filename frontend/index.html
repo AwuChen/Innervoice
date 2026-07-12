@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InnerVoice</title>
+
+  <!-- Tailwind via CDN Play (fine for a prototype; swap for a build step in production) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            serif: ['"Iowan Old Style"', '"Palatino Linotype"', 'Georgia', 'serif'],
+          },
+          keyframes: {
+            pulseSoft: {
+              '0%, 100%': { opacity: 0.35 },
+              '50%': { opacity: 1 },
+            },
+            fadeIn: {
+              from: { opacity: 0, transform: 'translateY(4px)' },
+              to: { opacity: 1, transform: 'translateY(0)' },
+            },
+          },
+          animation: {
+            'pulse-soft': 'pulseSoft 1.8s ease-in-out infinite',
+            'fade-in': 'fadeIn 0.4s ease-out',
+          },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    /* Hide the caret-jumping scrollbar for a cleaner canvas; keep it usable. */
+    #editor::-webkit-scrollbar { width: 6px; }
+    #editor::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 999px; }
+
+    #editor {
+      caret-color: #e5c98f;
+    }
+  </style>
+</head>
+<body class="bg-[#0b0b0d] text-neutral-200 min-h-screen flex flex-col items-center justify-center antialiased">
+
+  <!-- Status indicator: tiny, top-right, never intrusive -->
+  <div class="fixed top-6 right-6 flex items-center gap-2 text-[11px] tracking-wide text-neutral-500 select-none">
+    <span id="status-dot" class="w-1.5 h-1.5 rounded-full bg-neutral-600 transition-colors"></span>
+    <span id="status-label">listening</span>
+  </div>
+
+  <main class="w-full max-w-2xl px-8 flex flex-col items-center">
+    <h1 class="text-sm font-medium tracking-[0.3em] text-neutral-500 uppercase mb-10 select-none">
+      Inner<span class="text-neutral-300">Voice</span>
+    </h1>
+
+    <textarea
+      id="editor"
+      class="w-full min-h-[45vh] bg-transparent resize-none outline-none border-none
+             text-2xl leading-relaxed font-serif text-neutral-100 placeholder-neutral-600
+             tracking-wide"
+      placeholder="Begin writing…"
+      spellcheck="false"
+      autofocus
+    ></textarea>
+  </main>
+
+  <!-- Subtle whisper caption: the last phrase InnerVoice spoke, fades in/out.
+       Purely optional visual trace of the audio -- never a chat box, never persistent. -->
+  <div
+    id="whisper-caption"
+    class="fixed bottom-10 left-1/2 -translate-x-1/2 max-w-xl text-center
+           text-sm text-neutral-500 italic opacity-0 transition-opacity duration-700 select-none px-6"
+  ></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
