@@ -19,6 +19,7 @@ innervoice/
 │   ├── main.py       # FastAPI app: /api/predict streams MP3 bytes back
 │   ├── config.py     # env var / API key handling, provider resolution
 │   ├── llm.py        # OpenAI (gpt-4o-mini) / Anthropic (claude-haiku-4-5)
+│   ├── personas.py   # persona registry: system prompts for InnerVoice/Mentor/Friend/Demon
 │   └── tts.py         # ElevenLabs / Cartesia streaming TTS
 ├── frontend/
 │   ├── index.html    # distraction-free dark-mode editor (Tailwind)
@@ -115,6 +116,33 @@ of silence you should hear the whisper.
 - **Interruption**: stopping is a 150ms linear gain fade (`FADE_OUT_SECONDS`
   in `app.js`), not a hard cut — avoids an audible click while still feeling
   instantaneous.
+
+## Persona steering (experimental, `cursor/persona-steering` branch)
+
+The wordmark now doubles as a control: a small vertical slider next to
+"Inner_____" lets you morph the whisper's *intent*, not just its wording.
+Each position swaps the LLM system prompt used for the continuation
+(`backend/personas.py`):
+
+| Slider position | Persona | Steers toward |
+|---|---|---|
+| 0 | **InnerVoice** (default) | quiet, intuitive continuation of your own thought |
+| 1 | **InnerMentor** | clarity, growth, constructive next steps |
+| 2 | **InnerFriend** | warmth, validation, casual encouragement |
+| 3 | **InnerDemon** | cynicism, self-doubt, harsh (but never harmful) critique |
+
+The frontend fetches the persona list from `GET /api/personas` (id/label/
+tagline only — system prompts stay server-side) and sends the selected
+persona's `id` alongside the text in each `POST /api/predict` call. The
+chosen persona is remembered per-browser via `localStorage`.
+
+`InnerDemon`'s prompt includes an explicit safety rail instructing the model
+to stay cynical/critical but never suggest self-harm, violence, or genuinely
+abusive language — it's meant to model a harsh inner critic, not a threat.
+
+To add a new persona, add one `Persona(...)` entry (id, label, tagline,
+system_prompt) to `PERSONAS` in `backend/personas.py`; the slider range and
+frontend list pick it up automatically, no other file needs to change.
 
 ## Future work
 

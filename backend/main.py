@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 from backend.llm import generate_continuation
+from backend.personas import DEFAULT_PERSONA_ID, PERSONAS
 from backend.tts import stream_speech
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -52,6 +53,17 @@ app.add_middleware(
 
 class PredictRequest(BaseModel):
     text: str = Field(..., description="The user's current paragraph/context.")
+    persona: str = Field(
+        DEFAULT_PERSONA_ID,
+        description="Which inner-voice persona to steer the continuation with "
+        "(see GET /api/personas for the available ids).",
+    )
+
+
+@app.get("/api/personas")
+async def list_personas() -> list[dict]:
+    """Persona metadata for the frontend slider (never includes system prompts)."""
+    return [persona.public_dict() for persona in PERSONAS.values()]
 
 
 @app.get("/api/health")
@@ -90,7 +102,7 @@ async def predict(request: PredictRequest):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    predicted_text = await generate_continuation(context)
+    predicted_text = await generate_continuation(context, request.persona)
     if not predicted_text:
         return Response(status_code=204)
 
