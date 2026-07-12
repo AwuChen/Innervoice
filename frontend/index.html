@@ -47,9 +47,132 @@
 <body class="bg-[#0b0b0d] text-neutral-200 min-h-screen flex flex-col items-center justify-center antialiased">
 
   <!-- Status indicator: tiny, top-right, never intrusive -->
-  <div class="fixed top-6 right-6 flex items-center gap-2 text-[11px] tracking-wide text-neutral-500 select-none">
-    <span id="status-dot" class="w-1.5 h-1.5 rounded-full bg-neutral-600 transition-colors"></span>
-    <span id="status-label">listening</span>
+  <div class="fixed top-6 right-6 flex items-center gap-3 text-[11px] tracking-wide text-neutral-500 select-none">
+    <button
+      id="setup-voice-btn"
+      class="hidden underline decoration-dotted hover:text-neutral-300 transition-colors"
+      title="Re-record your cloned voice"
+    >set up voice</button>
+    <span class="flex items-center gap-2">
+      <span id="status-dot" class="w-1.5 h-1.5 rounded-full bg-neutral-600 transition-colors"></span>
+      <span id="status-label">listening</span>
+    </span>
+  </div>
+
+  <!-- ==================================================================
+       Voice onboarding overlay: record a script reading + a few personal
+       prompts, run ElevenLabs Instant Voice Clone, then get out of the way.
+       Hidden by default; onboarding.js decides whether to show it based on
+       GET /api/voice/profile.
+       ================================================================== -->
+  <div
+    id="onboarding"
+    class="hidden fixed inset-0 z-50 bg-[#0b0b0d]/97 backdrop-blur-sm flex items-center justify-center p-6"
+  >
+    <div class="w-full max-w-lg">
+      <!-- progress dots -->
+      <div id="onboarding-steps" class="flex items-center justify-center gap-2 mb-8"></div>
+
+      <!-- Step: welcome -->
+      <section data-step="welcome" class="onboarding-panel space-y-5 text-center">
+        <h2 class="text-xl font-serif text-neutral-100">Give InnerVoice your voice</h2>
+        <p class="text-sm text-neutral-400 leading-relaxed">
+          Read a short passage and answer a couple of quick prompts out loud.
+          We'll use ElevenLabs' Instant Voice Clone to whisper your predicted
+          words back to you in your own voice, from now on.
+        </p>
+        <div class="flex flex-col gap-3 items-center pt-2">
+          <button data-action="start" class="px-5 py-2 rounded-full bg-[#e5c98f] text-[#0b0b0d] text-sm font-medium hover:opacity-90 transition-opacity">
+            Get started &mdash; takes about a minute
+          </button>
+          <button data-action="skip" class="text-xs text-neutral-500 hover:text-neutral-300 underline decoration-dotted">
+            Skip for now, use a default voice
+          </button>
+        </div>
+      </section>
+
+      <!-- Step: read the script -->
+      <section data-step="script" class="onboarding-panel hidden space-y-5">
+        <div class="text-center">
+          <h2 class="text-lg font-serif text-neutral-100">Read this out loud</h2>
+          <p class="text-xs text-neutral-500 mt-1">Speak naturally, like you're telling someone a story.</p>
+        </div>
+        <blockquote id="onboarding-script-text" class="text-neutral-300 text-[15px] leading-relaxed font-serif bg-white/[0.03] border border-white/5 rounded-xl p-5 whitespace-pre-line"></blockquote>
+        <div class="flex flex-col items-center gap-3">
+          <div class="flex items-center gap-3">
+            <button data-action="record" data-slot="script" class="record-btn px-4 py-2 rounded-full bg-white/10 hover:bg-white/15 text-sm flex items-center gap-2 transition-colors">
+              <span class="rec-indicator w-2 h-2 rounded-full bg-red-500"></span>
+              <span class="rec-label">Record</span>
+            </button>
+            <audio class="preview-audio hidden" controls></audio>
+          </div>
+          <p class="clip-status text-[11px] text-neutral-500 h-4"></p>
+        </div>
+        <div class="flex items-center justify-between pt-2">
+          <button data-action="back" class="text-xs text-neutral-500 hover:text-neutral-300">&larr; Back</button>
+          <button data-action="next" data-target="personality" class="px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/15 text-sm disabled:opacity-30 disabled:cursor-not-allowed" disabled>
+            Next
+          </button>
+        </div>
+      </section>
+
+      <!-- Step: personality prompts -->
+      <section data-step="personality" class="onboarding-panel hidden space-y-5">
+        <div class="text-center">
+          <h2 class="text-lg font-serif text-neutral-100">A little about you</h2>
+          <p class="text-xs text-neutral-500 mt-1">Answer out loud, in your own words &mdash; this also helps InnerVoice sound more like you.</p>
+        </div>
+        <div id="onboarding-prompts" class="space-y-4"></div>
+        <div class="flex items-center justify-between pt-2">
+          <button data-action="back" class="text-xs text-neutral-500 hover:text-neutral-300">&larr; Back</button>
+          <button data-action="next" data-target="tone" class="px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/15 text-sm">
+            Next
+          </button>
+        </div>
+      </section>
+
+      <!-- Step: writing tone (typed, optional) -->
+      <section data-step="tone" class="onboarding-panel hidden space-y-5">
+        <div class="text-center">
+          <h2 class="text-lg font-serif text-neutral-100">One more thing</h2>
+          <p class="text-xs text-neutral-500 mt-1">In a few words, how would you describe your writing tone? (optional)</p>
+        </div>
+        <input
+          id="onboarding-tone-input"
+          type="text"
+          maxlength="200"
+          placeholder="e.g. dry, a little sarcastic, gets to the point"
+          class="w-full bg-white/[0.03] border border-white/10 rounded-lg px-4 py-2.5 text-sm text-neutral-200 placeholder-neutral-600 outline-none focus:border-[#e5c98f]/40"
+        />
+        <div class="flex items-center justify-between pt-2">
+          <button data-action="back" class="text-xs text-neutral-500 hover:text-neutral-300">&larr; Back</button>
+          <button data-action="submit" class="px-5 py-2 rounded-full bg-[#e5c98f] text-[#0b0b0d] text-sm font-medium hover:opacity-90 transition-opacity">
+            Clone my voice
+          </button>
+        </div>
+      </section>
+
+      <!-- Step: cloning in progress -->
+      <section data-step="cloning" class="onboarding-panel hidden text-center space-y-4 py-6">
+        <span class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse-soft"></span>
+        <p class="text-sm text-neutral-400">Cloning your voice&hellip; this can take up to a minute.</p>
+      </section>
+
+      <!-- Step: done -->
+      <section data-step="done" class="onboarding-panel hidden text-center space-y-4 py-6">
+        <span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+        <p class="text-sm text-neutral-300">Your voice is ready. Start typing whenever you like.</p>
+      </section>
+
+      <!-- Step: error -->
+      <section data-step="error" class="onboarding-panel hidden text-center space-y-4 py-6">
+        <p id="onboarding-error-text" class="text-sm text-red-400"></p>
+        <div class="flex items-center justify-center gap-4">
+          <button data-action="retry" class="px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/15 text-sm">Try again</button>
+          <button data-action="skip" class="text-xs text-neutral-500 hover:text-neutral-300 underline decoration-dotted">Skip for now</button>
+        </div>
+      </section>
+    </div>
   </div>
 
   <main class="w-full max-w-2xl px-8 flex flex-col items-center">
@@ -76,6 +199,7 @@
            text-sm text-neutral-500 italic opacity-0 transition-opacity duration-700 select-none px-6"
   ></div>
 
+  <script src="onboarding.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

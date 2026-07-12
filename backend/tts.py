@@ -19,6 +19,7 @@ from typing import AsyncGenerator
 import httpx
 
 from backend.config import get_settings
+from backend.voice_profile import get_profile
 
 logger = logging.getLogger("innervoice.tts")
 
@@ -43,7 +44,12 @@ async def stream_speech(text: str) -> AsyncGenerator[bytes, None]:
 
 async def _stream_elevenlabs(text: str) -> AsyncGenerator[bytes, None]:
     settings = get_settings()
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{settings.elevenlabs_voice_id}/stream"
+    # Prefer the voice the user cloned for themselves during onboarding
+    # (Instant Voice Clone); fall back to the static env-configured voice
+    # if they haven't gone through that flow (or skipped it).
+    profile = await get_profile()
+    voice_id = profile.voice_id or settings.elevenlabs_voice_id
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 
     headers = {
         "xi-api-key": settings.elevenlabs_api_key,

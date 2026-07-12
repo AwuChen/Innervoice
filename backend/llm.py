@@ -19,10 +19,11 @@ import logging
 import re
 
 from backend.config import get_settings
+from backend.voice_profile import get_profile
 
 logger = logging.getLogger("innervoice.llm")
 
-SYSTEM_PROMPT = """\
+BASE_SYSTEM_PROMPT = """\
 You are InnerVoice: the quiet, intuitive undercurrent of the user's own mind.
 You are given the fragment of text the user is currently writing, mid-thought.
 
@@ -39,6 +40,23 @@ Rules (follow strictly):
 - If the input is too short or ambiguous to continue meaningfully, make your
   best gentle guess anyway -- never refuse and never ask a question back.
 """
+
+
+async def _build_system_prompt() -> str:
+    """
+    Fold in the short personality blurb the user gave during voice
+    onboarding (if any), so the *words* InnerVoice predicts feel like the
+    same person the *cloned voice* is speaking with.
+    """
+    profile = await get_profile()
+    if not profile.personality_note:
+        return BASE_SYSTEM_PROMPT
+    return (
+        f"{BASE_SYSTEM_PROMPT}\n"
+        "Here is how this specific user described their own personality/writing "
+        f"style during setup -- let it subtly color word choice and tone:\n"
+        f'"{profile.personality_note}"\n'
+    )
 
 
 def _clamp_words(text: str, max_words: int) -> str:
@@ -62,10 +80,11 @@ async def generate_continuation(context: str) -> str:
     provider = settings.resolved_llm_provider
 
     try:
+        system_prompt = await _build_system_prompt()
         if provider == "openai":
-            raw = await _generate_openai(context)
+            raw = await _generate_openai(context, system_prompt)
         else:
-            raw = await _generate_anthropic(context)
+            raw = await _generate_anthropic(context, system_prompt)
     except Exception:
         logger.exception("LLM completion failed (provider=%s)", provider)
         return ""
@@ -74,7 +93,7 @@ async def generate_continuation(context: str) -> str:
     return cleaned
 
 
-async def _generate_openai(context: str) -> str:
+async def _generate_openai(context: str, system_prompt: str) -> str:
     from openai import AsyncOpenAI
 
     settings = get_settings()
@@ -83,7 +102,7 @@ async def _generate_openai(context: str) -> str:
     response = await client.chat.completions.create(
         model=settings.openai_model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": context},
         ],
         max_tokens=40,
@@ -93,7 +112,7 @@ async def _generate_openai(context: str) -> str:
     return (response.choices[0].message.content or "").strip()
 
 
-async def _generate_anthropic(context: str) -> str:
+async def _generate_anthropic(context: str, system_prompt: str) -> str:
     from anthropic import AsyncAnthropic
 
     settings = get_settings()
@@ -102,7 +121,7 @@ async def _generate_anthropic(context: str) -> str:
     response = await client.messages.create(
         model=settings.anthropic_model,
         max_tokens=40,
-        system=SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": context}],
     )
     text_blocks = [block.text for block in response.content if block.type == "text"]
