@@ -21,12 +21,14 @@ innervoice/
 │   ├── llm.py                      # OpenAI (gpt-4o-mini) / Anthropic (claude-haiku-4-5)
 │   ├── tts.py                       # ElevenLabs / Cartesia streaming TTS
 │   ├── voice_clone.py               # ElevenLabs Instant Voice Clone API wrapper
-│   ├── voice_profile.py             # persisted { voice_id, personality_note } (JSON file)
+│   ├── voice_profile.py             # persisted { voice_id, voice_name } (JSON file)
 │   └── voice_onboarding_content.py  # reading script + "get to know you" prompts
 ├── frontend/
-│   ├── index.html      # distraction-free dark-mode editor (Tailwind) + onboarding overlay
-│   ├── app.js           # debounce, request lifecycle, MSE audio playback
-│   └── onboarding.js    # record script/prompts, POST to /api/voice/clone, resume flow
+│   ├── index.html        # distraction-free dark-mode editor (Tailwind)
+│   ├── app.js              # debounce, request lifecycle, MSE audio playback
+│   ├── voice-gate.js       # on load, sends the user to onboarding.html if needed
+│   ├── onboarding.html     # dedicated voice-setup page (same look as the editor)
+│   └── onboarding.js       # record script/prompts, POST to /api/voice/clone, navigate back
 ├── requirements.txt
 └── .env.example
 ```
@@ -60,36 +62,31 @@ innervoice/
 ### Voice onboarding (record once → clone → resume the loop above)
 
 Before InnerVoice can whisper back "in your own voice", it needs a voice to
-clone. This is a one-time (or redo-able) setup step that runs entirely
-client-side plus two small backend endpoints, and hands off into the exact
-same `/api/predict` loop described above once it's done:
+clone. This is a one-time (or redo-able) setup step that lives on its own
+dedicated page -- `frontend/onboarding.html` -- rather than a popup on top
+of the editor, and it hands off into the exact same `/api/predict` loop
+described above once it's done:
 
-1. On load, `frontend/onboarding.js` calls `GET /api/voice/profile`. If
+1. On load, `frontend/voice-gate.js` calls `GET /api/voice/profile`. If
    ElevenLabs is configured as the TTS provider and the user hasn't cloned
-   a voice yet (and hasn't dismissed onboarding before), it shows a
-   full-screen overlay and disables the editor underneath so stray
-   keystrokes can't sneak a prediction in behind it.
+   a voice yet (and hasn't dismissed onboarding before), it navigates to
+   `/onboarding.html` before the editor is ever shown.
 2. The user **reads a short, phonetically-varied script out loud** (a
    clean, scripted sample is what Instant Voice Clone needs for accurate
    timbre/pacing) via `MediaRecorder`, then **answers a few "get to know
    you" prompts in their own words** (natural, unscripted speech that adds
-   variety to the clone) and optionally **types one line about their
-   writing tone**.
+   variety to the clone).
 3. On submit, the browser `POST`s all recorded clips as `multipart/form-data`
    to `POST /api/voice/clone`. The backend (`backend/voice_clone.py`) calls
    ElevenLabs' `POST /v1/voices/add` (Instant Voice Clone) with those
-   samples, gets back a `voice_id`, and persists it — along with the typed
-   personality note — via `backend/voice_profile.py`.
-4. From that moment on:
-   - `backend/tts.py` whispers back using the cloned `voice_id` instead of
-     the static `ELEVENLABS_VOICE_ID` fallback.
-   - `backend/llm.py` folds the personality note into its system prompt, so
-     the *words* InnerVoice predicts lean toward how this specific person
-     described their own tone.
-5. The overlay closes and the editor re-enables itself — the normal
+   samples, gets back a `voice_id`, and persists it via
+   `backend/voice_profile.py`.
+4. `backend/tts.py` whispers back using the cloned `voice_id` from that
+   moment on, instead of the static `ELEVENLABS_VOICE_ID` fallback.
+5. The page navigates back to `/` -- the editor loads normally and the
    typing → predicting → whispering loop just resumes, now in the user's
    own cloned voice. A small "re-record voice" link stays available (top
-   right) if they want to redo it later.
+   right of the editor) if they want to redo it later.
 
 This only activates for the ElevenLabs provider (Instant Voice Clone is an
 ElevenLabs feature); if Cartesia is configured instead, `supported: false`

@@ -95,7 +95,6 @@ class VoiceProfileResponse(BaseModel):
     supported: bool = Field(..., description="Whether Instant Voice Clone is available at all.")
     has_voice: bool
     voice_name: Optional[str] = None
-    personality_note: str = ""
     reading_script: str
     personality_prompts: list[str]
     min_samples: int
@@ -126,7 +125,6 @@ async def voice_profile() -> VoiceProfileResponse:
         supported=_voice_clone_supported(),
         has_voice=profile.has_voice,
         voice_name=profile.voice_name,
-        personality_note=profile.personality_note,
         reading_script=READING_SCRIPT,
         personality_prompts=PERSONALITY_PROMPTS,
         min_samples=MIN_SAMPLES,
@@ -139,7 +137,6 @@ async def voice_profile() -> VoiceProfileResponse:
 async def voice_clone(
     samples: list[UploadFile] = File(..., description="Recorded script + prompt-answer audio clips."),
     voice_name: str = Form("My InnerVoice"),
-    personality_note: str = Form(""),
 ) -> VoiceCloneResponse:
     """
     Runs ElevenLabs Instant Voice Clone on the uploaded recordings and, on
@@ -186,7 +183,7 @@ async def voice_clone(
     except VoiceCloneError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    await save_profile(voice_id=voice_id, voice_name=voice_name, personality_note=personality_note)
+    await save_profile(voice_id=voice_id, voice_name=voice_name)
 
     if previous.voice_id and previous.voice_id != voice_id:
         await delete_voice(previous.voice_id)

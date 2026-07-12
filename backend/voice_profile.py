@@ -3,15 +3,11 @@ voice_profile.py
 -----------------
 Tiny persisted "who is this user" record for the single-user prototype:
 
-    - `voice_id`         - the ElevenLabs voice produced by Instant Voice
-                            Clone during onboarding. Once set, `tts.py`
-                            whispers back in this voice instead of the
-                            static `ELEVENLABS_VOICE_ID` fallback.
-    - `voice_name`       - display name the user gave their clone.
-    - `personality_note` - a short, free-text blurb the user typed about
-                            their own writing tone/personality during
-                            onboarding. `llm.py` folds this into the system
-                            prompt so continuations feel more "them".
+    - `voice_id`   - the ElevenLabs voice produced by Instant Voice Clone
+                      during onboarding. Once set, `tts.py` whispers back in
+                      this voice instead of the static `ELEVENLABS_VOICE_ID`
+                      fallback.
+    - `voice_name` - display name the user gave their clone.
 
 This is deliberately a flat JSON file rather than a database -- InnerVoice
 is a single-user prototype (see README "Future work"). Swap this module out
@@ -37,7 +33,6 @@ _lock = asyncio.Lock()
 class VoiceProfile(BaseModel):
     voice_id: Optional[str] = None
     voice_name: Optional[str] = None
-    personality_note: str = ""
     created_at: Optional[float] = None
 
     @property
@@ -65,11 +60,10 @@ async def get_profile() -> VoiceProfile:
         return await asyncio.to_thread(_read_sync)
 
 
-async def save_profile(voice_id: str, voice_name: str, personality_note: str = "") -> VoiceProfile:
+async def save_profile(voice_id: str, voice_name: str) -> VoiceProfile:
     profile = VoiceProfile(
         voice_id=voice_id,
         voice_name=voice_name,
-        personality_note=personality_note.strip(),
         created_at=time.time(),
     )
     async with _lock:

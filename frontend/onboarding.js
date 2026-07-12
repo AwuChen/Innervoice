@@ -1,18 +1,19 @@
 /**
  * onboarding.js
  * -------------
- * One-time (or redo-able) voice setup flow:
+ * Script for the dedicated `/onboarding.html` page (a real page navigation,
+ * not a popup/overlay on top of the editor):
  *
- *   1. Fetch /api/voice/profile to find out whether Instant Voice Clone is
- *      available and whether the user already has a cloned voice.
- *   2. If not, show an overlay: read a short script + answer a few
- *      "get to know you" prompts out loud (MediaRecorder), optionally type
- *      a one-line "writing tone" note.
+ *   1. Fetch /api/voice/profile. If Instant Voice Clone isn't available,
+ *      bounce straight back to the editor -- nothing to do here.
+ *   2. Read a short script out loud (MediaRecorder), then answer a few
+ *      "get to know you" prompts out loud.
  *   3. POST all recordings to /api/voice/clone. The backend runs ElevenLabs
  *      Instant Voice Clone, persists the resulting voice_id, and every
  *      subsequent /api/predict whisper uses it automatically.
- *   4. Close the overlay and let `app.js`'s normal typing/whisper loop
- *      resume -- this file never touches the editor directly.
+ *   4. Navigate back to `/` -- the editor's own boot check (voice-gate.js)
+ *      sees the voice is now set and just lets the normal typing/whisper
+ *      loop run.
  */
 
 (() => {
@@ -21,20 +22,13 @@
   const PROFILE_ENDPOINT = '/api/voice/profile';
   const CLONE_ENDPOINT = '/api/voice/clone';
   const SKIP_STORAGE_KEY = 'innervoice.onboardingSkipped';
-  const STEP_ORDER = ['welcome', 'script', 'personality', 'tone'];
+  const STEP_ORDER = ['welcome', 'script', 'personality'];
 
-  const overlay = document.getElementById('onboarding');
   const stepsEl = document.getElementById('onboarding-steps');
-  const setupBtn = document.getElementById('setup-voice-btn');
   const scriptTextEl = document.getElementById('onboarding-script-text');
   const promptsContainer = document.getElementById('onboarding-prompts');
-  const toneInput = document.getElementById('onboarding-tone-input');
   const errorTextEl = document.getElementById('onboarding-error-text');
-  const editorEl = document.getElementById('editor');
 
-  if (!overlay) return; // markup missing; nothing to wire up.
-
-  let profileData = null;
   let mediaStream = null;
   let activeRecording = null; // { slot, recorder, chunks }
   const recordings = new Map(); // slot -> Blob
@@ -60,32 +54,15 @@
   }
 
   function goToStep(step) {
-    overlay.querySelectorAll('.onboarding-panel').forEach((panel) => {
+    document.querySelectorAll('.onboarding-panel').forEach((panel) => {
       panel.classList.toggle('hidden', panel.dataset.step !== step);
     });
     renderStepDots(step);
   }
 
-  function openOverlay() {
-    overlay.classList.remove('hidden');
-    document.body.style.overflow = 'hidden';
-    // The <textarea> has `autofocus`; disable it while onboarding is up so
-    // stray keystrokes can't trigger predictions underneath the overlay.
-    if (editorEl) {
-      editorEl.blur();
-      editorEl.disabled = true;
-    }
-    goToStep('welcome');
-  }
-
-  function closeOverlay() {
-    overlay.classList.add('hidden');
-    document.body.style.overflow = '';
+  function backToEditor() {
     releaseMic();
-    if (editorEl) {
-      editorEl.disabled = false;
-      editorEl.focus();
-    }
+    window.location.href = '/';
   }
 
   // -----------------------------------------------------------------------
@@ -109,7 +86,7 @@
     return 'audio';
   }
 
-  async function releaseMic() {
+  function releaseMic() {
     if (activeRecording) {
       try {
         activeRecording.recorder.stop();
@@ -131,13 +108,14 @@
   }
 
   function findRecordButton(slot) {
-    return overlay.querySelector(`.record-btn[data-slot="${slot}"]`);
+    return document.querySelector(`.record-btn[data-slot="${slot}"]`);
   }
 
   function setClipStatus(slot, message) {
     const btn = findRecordButton(slot);
-    const status = btn?.closest('[data-slot-wrap]')?.querySelector('.clip-status')
-      || btn?.parentElement?.parentElement?.querySelector('.clip-status');
+    const status =
+      btn?.closest('[data-slot-wrap]')?.querySelector('.clip-status') ||
+      btn?.parentElement?.parentElement?.querySelector('.clip-status');
     if (status) status.textContent = message;
   }
 
@@ -198,16 +176,14 @@
     if (state === 'recording') {
       label.textContent = 'Stop';
       dot.classList.add('animate-pulse-soft');
-      btn.classList.add('bg-red-500/20');
     } else {
       label.textContent = recordings.has(btn.dataset.slot) ? 'Re-record' : 'Record';
       dot.classList.remove('animate-pulse-soft');
-      btn.classList.remove('bg-red-500/20');
     }
   }
 
   function refreshNextButtons() {
-    const scriptNext = overlay.querySelector('[data-step="script"] [data-action="next"]');
+    const scriptNext = document.querySelector('[data-step="script"] [data-action="next"]');
     if (scriptNext) scriptNext.disabled = !recordings.has('script');
   }
 
@@ -220,15 +196,15 @@
       const slot = `personality-${i}`;
       const wrap = document.createElement('div');
       wrap.dataset.slotWrap = '';
-      wrap.className = 'bg-white/[0.03] border border-white/5 rounded-xl p-4 space-y-2';
+      wrap.className = 'py-4 space-y-2 first:pt-0 last:pb-0';
       wrap.innerHTML = `
         <p class="text-sm text-neutral-300">${prompt}</p>
         <div class="flex items-center gap-3">
-          <button data-action="record" data-slot="${slot}" class="record-btn px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/15 text-xs flex items-center gap-2 transition-colors">
+          <button data-action="record" data-slot="${slot}" class="record-btn flex items-center gap-2 text-xs text-neutral-400 hover:text-neutral-200 transition-colors">
             <span class="rec-indicator w-1.5 h-1.5 rounded-full bg-red-500"></span>
             <span class="rec-label">Record</span>
           </button>
-          <audio class="preview-audio hidden" controls style="height: 28px;"></audio>
+          <audio class="preview-audio hidden" controls style="height: 26px;"></audio>
         </div>
         <p class="clip-status text-[11px] text-neutral-500 h-4"></p>
       `;
@@ -247,7 +223,6 @@
       formData.append('samples', blob, `${slot}.${extensionFor(blob.type)}`);
     }
     formData.append('voice_name', 'My InnerVoice');
-    formData.append('personality_note', toneInput.value.trim());
 
     let response;
     try {
@@ -270,9 +245,8 @@
     }
 
     localStorage.removeItem(SKIP_STORAGE_KEY);
-    releaseMic();
     goToStep('done');
-    setTimeout(() => closeOverlay(), 1800);
+    setTimeout(() => backToEditor(), 1400);
   }
 
   function showError(message) {
@@ -283,7 +257,7 @@
   // -----------------------------------------------------------------------
   // Wiring
   // -----------------------------------------------------------------------
-  overlay.addEventListener('click', (e) => {
+  document.addEventListener('click', (e) => {
     const target = e.target.closest('[data-action]');
     if (!target) return;
     const action = target.dataset.action;
@@ -301,58 +275,37 @@
     } else if (action === 'submit') {
       submitClone();
     } else if (action === 'retry') {
-      goToStep('tone');
+      goToStep('personality');
     } else if (action === 'skip') {
       localStorage.setItem(SKIP_STORAGE_KEY, '1');
-      closeOverlay();
+      backToEditor();
     }
   });
 
-  if (setupBtn) {
-    setupBtn.addEventListener('click', () => {
-      localStorage.removeItem(SKIP_STORAGE_KEY);
-      openOverlay();
-    });
-  }
-
   // -----------------------------------------------------------------------
-  // Boot: decide whether onboarding should auto-open
+  // Boot
   // -----------------------------------------------------------------------
   async function init() {
-    // Hold the editor until we know whether onboarding needs to run, so a
-    // fast typist can't sneak a keystroke in before the overlay appears.
-    if (editorEl) editorEl.disabled = true;
-
+    let profile;
     try {
       const response = await fetch(PROFILE_ENDPOINT);
       if (!response.ok) throw new Error(`profile fetch failed: ${response.status}`);
-      profileData = await response.json();
+      profile = await response.json();
     } catch (err) {
       console.warn('[InnerVoice] could not load voice profile', err);
-      if (editorEl) editorEl.disabled = false;
+      window.location.href = '/';
       return;
     }
 
-    if (!profileData.supported) {
-      if (editorEl) editorEl.disabled = false;
-      return; // no ElevenLabs configured; stay out of the way.
+    if (!profile.supported) {
+      window.location.href = '/'; // nothing to onboard into; bounce back.
+      return;
     }
 
-    scriptTextEl.textContent = profileData.reading_script;
-    renderPersonalityPrompts(profileData.personality_prompts || []);
-    setupBtn.classList.remove('hidden');
-    setupBtn.textContent = profileData.has_voice ? 're-record voice' : 'set up voice';
-
-    const skipped = localStorage.getItem(SKIP_STORAGE_KEY) === '1';
-    if (!profileData.has_voice && !skipped) {
-      openOverlay();
-    } else if (editorEl) {
-      editorEl.disabled = false;
-    }
+    scriptTextEl.textContent = profile.reading_script;
+    renderPersonalityPrompts(profile.personality_prompts || []);
+    goToStep('welcome');
   }
 
-  // This script tag sits at the end of <body>, so the DOM is already parsed
-  // by the time we get here -- no need to wait for DOMContentLoaded (which,
-  // this late, may have already fired).
   init();
 })();
