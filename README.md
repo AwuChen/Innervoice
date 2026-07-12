@@ -116,6 +116,77 @@ of silence you should hear the whisper.
   in `app.js`), not a hard cut — avoids an audible click while still feeling
   instantaneous.
 
+## Deployment
+
+InnerVoice requires a server to run the Python backend (it cannot be deployed to
+static hosting like GitHub Pages). The following platforms support this
+application with minimal configuration.
+
+### Render (recommended)
+
+1. Fork or push this repo to GitHub.
+2. Create a new **Web Service** at [render.com](https://render.com).
+3. Connect your GitHub repo — Render will auto-detect the `render.yaml`.
+4. In the Render dashboard, add environment variables for your API keys:
+   - `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (one LLM provider)
+   - `ELEVENLABS_API_KEY` or `CARTESIA_API_KEY` (one TTS provider)
+   - Optionally: `ELEVENLABS_VOICE_ID` / `CARTESIA_VOICE_ID` for a cloned voice
+5. Deploy — your app will be live at `https://<service-name>.onrender.com`.
+
+### Railway
+
+1. Push this repo to GitHub.
+2. Create a new project at [railway.app](https://railway.app) and connect your repo.
+3. Railway will auto-detect Python and use the `Procfile`.
+4. Add environment variables in the Railway dashboard (same keys as above).
+5. Deploy — Railway provides a public URL automatically.
+
+### Heroku
+
+1. Install the [Heroku CLI](https://devcenter.heroku.com/articles/heroku-cli).
+2. Create a new app:
+   ```bash
+   heroku create my-innervoice-app
+   ```
+3. Set environment variables:
+   ```bash
+   heroku config:set OPENAI_API_KEY=sk-...
+   heroku config:set ELEVENLABS_API_KEY=...
+   ```
+4. Deploy:
+   ```bash
+   git push heroku main
+   ```
+
+### Fly.io
+
+1. Install the [Fly CLI](https://fly.io/docs/hands-on/install-flyctl/).
+2. Launch a new app:
+   ```bash
+   fly launch
+   ```
+3. Set secrets:
+   ```bash
+   fly secrets set OPENAI_API_KEY=sk-...
+   fly secrets set ELEVENLABS_API_KEY=...
+   ```
+4. Deploy:
+   ```bash
+   fly deploy
+   ```
+
+### Environment Variables Reference
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | One of these | OpenAI API key for GPT-4o-mini |
+| `ANTHROPIC_API_KEY` | One of these | Anthropic API key for Claude Haiku |
+| `ELEVENLABS_API_KEY` | One of these | ElevenLabs API key for TTS |
+| `CARTESIA_API_KEY` | One of these | Cartesia API key for TTS |
+| `ELEVENLABS_VOICE_ID` | Optional | Custom voice ID (defaults to built-in voice) |
+| `CARTESIA_VOICE_ID` | Optional | Custom voice ID for Cartesia |
+| `CORS_ORIGINS` | Optional | Allowed origins (defaults to `*`) |
+
 ## Future work
 
 - **Chain streaming end-to-end**: right now the backend waits for the full
