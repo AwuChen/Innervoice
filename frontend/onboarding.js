@@ -49,7 +49,7 @@
       const dot = document.createElement('span');
       dot.className =
         'w-1.5 h-1.5 rounded-full transition-colors ' +
-        (i <= idx ? 'bg-[#e5c98f]' : 'bg-white/15');
+        (i <= idx ? 'bg-white' : 'bg-white/15');
       stepsEl.appendChild(dot);
     });
   }
