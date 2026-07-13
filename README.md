@@ -71,16 +71,17 @@ described above once it's done:
    ElevenLabs is configured as the TTS provider and the user hasn't cloned
    a voice yet (and hasn't dismissed onboarding before), it navigates to
    `/onboarding.html` before the editor is ever shown.
-2. The user **reads a short, phonetically-varied script out loud** (a
-   clean, scripted sample is what Instant Voice Clone needs for accurate
-   timbre/pacing) via `MediaRecorder`, then **answers a few "get to know
-   you" prompts in their own words** (natural, unscripted speech that adds
-   variety to the clone).
-3. On submit, the browser `POST`s all recorded clips as `multipart/form-data`
-   to `POST /api/voice/clone`. The backend (`backend/voice_clone.py`) calls
-   ElevenLabs' `POST /v1/voices/add` (Instant Voice Clone) with those
-   samples, gets back a `voice_id`, and persists it via
-   `backend/voice_profile.py`.
+2. The user **reads a single short, phonetically-varied script out loud**,
+   once, via `MediaRecorder`. Onboarding intentionally asks for exactly one
+   clean, consistently-delivered reading rather than mixing in separate
+   free-response prompts -- an earlier version of this flow did that, but
+   recordings with noticeably different delivery/tone (e.g. a deliberately
+   deadpan answer) tended to introduce accent/tone drift into the clone
+   instead of helping it.
+3. On submit, the browser `POST`s that recording as `multipart/form-data` to
+   `POST /api/voice/clone`. The backend (`backend/voice_clone.py`) calls
+   ElevenLabs' `POST /v1/voices/add` (Instant Voice Clone) with that sample,
+   gets back a `voice_id`, and persists it via `backend/voice_profile.py`.
 4. `backend/tts.py` whispers back using the cloned `voice_id` from that
    moment on, instead of the static `ELEVENLABS_VOICE_ID` fallback.
 5. The page navigates back to `/` -- the editor loads normally and the

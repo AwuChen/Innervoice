@@ -6,9 +6,10 @@
  *
  *   1. Fetch /api/voice/profile. If Instant Voice Clone isn't available,
  *      bounce straight back to the editor -- nothing to do here.
- *   2. Read a short script out loud (MediaRecorder), then answer a few
- *      "get to know you" prompts out loud.
- *   3. POST all recordings to /api/voice/clone. The backend runs ElevenLabs
+ *   2. Read a single short script out loud (MediaRecorder). Just one clean,
+ *      consistently-delivered reading -- mixing in separate free-response
+ *      recordings tended to introduce tone/accent drift into the clone.
+ *   3. POST that recording to /api/voice/clone. The backend runs ElevenLabs
  *      Instant Voice Clone, persists the resulting voice_id, and every
  *      subsequent /api/predict whisper uses it automatically.
  *   4. Navigate back to `/` -- the editor's own boot check (voice-gate.js)
@@ -22,16 +23,16 @@
   const PROFILE_ENDPOINT = '/api/voice/profile';
   const CLONE_ENDPOINT = '/api/voice/clone';
   const SKIP_STORAGE_KEY = 'innervoice.onboardingSkipped';
-  const STEP_ORDER = ['welcome', 'script', 'personality'];
+  const STEP_ORDER = ['welcome', 'script'];
+  const SCRIPT_SLOT = 'script';
 
   const stepsEl = document.getElementById('onboarding-steps');
   const scriptTextEl = document.getElementById('onboarding-script-text');
-  const promptsContainer = document.getElementById('onboarding-prompts');
   const errorTextEl = document.getElementById('onboarding-error-text');
 
   let mediaStream = null;
-  let activeRecording = null; // { slot, recorder, chunks }
-  const recordings = new Map(); // slot -> Blob
+  let activeRecording = null; // { recorder, chunks }
+  let scriptBlob = null;
 
   // -----------------------------------------------------------------------
   // Step navigation
@@ -107,41 +108,35 @@
     return mediaStream;
   }
 
-  function findRecordButton(slot) {
-    return document.querySelector(`.record-btn[data-slot="${slot}"]`);
+  function recordButton() {
+    return document.querySelector(`.record-btn[data-slot="${SCRIPT_SLOT}"]`);
   }
 
-  function setClipStatus(slot, message) {
-    const btn = findRecordButton(slot);
-    const status =
-      btn?.closest('[data-slot-wrap]')?.querySelector('.clip-status') ||
-      btn?.parentElement?.parentElement?.querySelector('.clip-status');
-    if (status) status.textContent = message;
+  function setClipStatus(message) {
+    document.querySelector('.clip-status').textContent = message;
   }
 
-  function updatePreview(slot, blob) {
-    const btn = findRecordButton(slot);
-    const scope = btn?.closest('[data-slot-wrap]') || btn?.parentElement?.parentElement;
-    const audioEl = scope?.querySelector('.preview-audio');
+  function updatePreview(blob) {
+    const audioEl = document.querySelector('.preview-audio');
     if (audioEl) {
       audioEl.src = URL.createObjectURL(blob);
       audioEl.classList.remove('hidden');
     }
   }
 
-  async function toggleRecording(slot, btn) {
-    if (activeRecording && activeRecording.slot === slot) {
+  async function toggleRecording() {
+    const btn = recordButton();
+    if (activeRecording) {
       activeRecording.recorder.stop();
       return;
     }
-    if (activeRecording) return; // another recording already in progress
 
     let stream;
     try {
       stream = await ensureMic();
     } catch (err) {
       console.warn('[InnerVoice] mic permission denied', err);
-      setClipStatus(slot, "Couldn't access your microphone -- check browser permissions.");
+      setClipStatus("Couldn't access your microphone -- check browser permissions.");
       return;
     }
 
@@ -154,19 +149,18 @@
     });
 
     recorder.addEventListener('stop', () => {
-      const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-      recordings.set(slot, blob);
+      scriptBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
       activeRecording = null;
       setRecordButtonState(btn, 'idle');
-      setClipStatus(slot, 'Saved — you can re-record if you want.');
-      updatePreview(slot, blob);
-      refreshNextButtons();
+      setClipStatus('Saved — you can re-record if you want.');
+      updatePreview(scriptBlob);
+      refreshSubmitButton();
     });
 
     recorder.start();
-    activeRecording = { slot, recorder, chunks };
+    activeRecording = { recorder, chunks };
     setRecordButtonState(btn, 'recording');
-    setClipStatus(slot, 'Recording… click again to stop.');
+    setClipStatus('Recording… click again to stop.');
   }
 
   function setRecordButtonState(btn, state) {
@@ -177,51 +171,25 @@
       label.textContent = 'Stop';
       dot.classList.add('animate-pulse-soft');
     } else {
-      label.textContent = recordings.has(btn.dataset.slot) ? 'Re-record' : 'Record';
+      label.textContent = scriptBlob ? 'Re-record' : 'Record';
       dot.classList.remove('animate-pulse-soft');
     }
   }
 
-  function refreshNextButtons() {
-    const scriptNext = document.querySelector('[data-step="script"] [data-action="next"]');
-    if (scriptNext) scriptNext.disabled = !recordings.has('script');
-  }
-
-  // -----------------------------------------------------------------------
-  // Personality prompts (rendered dynamically from the backend's copy)
-  // -----------------------------------------------------------------------
-  function renderPersonalityPrompts(prompts) {
-    promptsContainer.innerHTML = '';
-    prompts.forEach((prompt, i) => {
-      const slot = `personality-${i}`;
-      const wrap = document.createElement('div');
-      wrap.dataset.slotWrap = '';
-      wrap.className = 'py-4 space-y-2 first:pt-0 last:pb-0';
-      wrap.innerHTML = `
-        <p class="text-sm text-neutral-300">${prompt}</p>
-        <div class="flex items-center gap-3">
-          <button data-action="record" data-slot="${slot}" class="record-btn flex items-center gap-2 text-xs text-neutral-400 hover:text-neutral-200 transition-colors">
-            <span class="rec-indicator w-1.5 h-1.5 rounded-full bg-red-500"></span>
-            <span class="rec-label">Record</span>
-          </button>
-          <audio class="preview-audio hidden" controls style="height: 26px;"></audio>
-        </div>
-        <p class="clip-status text-[11px] text-neutral-500 h-4"></p>
-      `;
-      promptsContainer.appendChild(wrap);
-    });
+  function refreshSubmitButton() {
+    const submitBtn = document.querySelector('[data-step="script"] [data-action="submit"]');
+    if (submitBtn) submitBtn.disabled = !scriptBlob;
   }
 
   // -----------------------------------------------------------------------
   // Submission
   // -----------------------------------------------------------------------
   async function submitClone() {
+    if (!scriptBlob) return;
     goToStep('cloning');
 
     const formData = new FormData();
-    for (const [slot, blob] of recordings.entries()) {
-      formData.append('samples', blob, `${slot}.${extensionFor(blob.type)}`);
-    }
+    formData.append('samples', scriptBlob, `${SCRIPT_SLOT}.${extensionFor(scriptBlob.type)}`);
     formData.append('voice_name', 'My InnerVoice');
 
     let response;
@@ -263,11 +231,9 @@
     const action = target.dataset.action;
 
     if (action === 'record') {
-      toggleRecording(target.dataset.slot, target);
+      toggleRecording();
     } else if (action === 'start') {
       goToStep('script');
-    } else if (action === 'next') {
-      goToStep(target.dataset.target);
     } else if (action === 'back') {
       const panel = target.closest('.onboarding-panel');
       const idx = STEP_ORDER.indexOf(panel.dataset.step);
@@ -275,7 +241,7 @@
     } else if (action === 'submit') {
       submitClone();
     } else if (action === 'retry') {
-      goToStep('personality');
+      goToStep('script');
     } else if (action === 'skip') {
       localStorage.setItem(SKIP_STORAGE_KEY, '1');
       backToEditor();
@@ -303,7 +269,6 @@
     }
 
     scriptTextEl.textContent = profile.reading_script;
-    renderPersonalityPrompts(profile.personality_prompts || []);
     goToStep('welcome');
   }
 

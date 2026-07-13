@@ -36,7 +36,6 @@ from backend.voice_clone import VoiceCloneError, VoiceSample, create_instant_voi
 from backend.voice_onboarding_content import (
     MAX_SAMPLES,
     MIN_SAMPLES,
-    PERSONALITY_PROMPTS,
     READING_SCRIPT,
     RECOMMENDED_SECONDS,
 )
@@ -96,7 +95,6 @@ class VoiceProfileResponse(BaseModel):
     has_voice: bool
     voice_name: Optional[str] = None
     reading_script: str
-    personality_prompts: list[str]
     min_samples: int
     max_samples: int
     recommended_seconds: int
@@ -126,7 +124,6 @@ async def voice_profile() -> VoiceProfileResponse:
         has_voice=profile.has_voice,
         voice_name=profile.voice_name,
         reading_script=READING_SCRIPT,
-        personality_prompts=PERSONALITY_PROMPTS,
         min_samples=MIN_SAMPLES,
         max_samples=MAX_SAMPLES,
         recommended_seconds=RECOMMENDED_SECONDS,
@@ -135,7 +132,7 @@ async def voice_profile() -> VoiceProfileResponse:
 
 @app.post("/api/voice/clone", response_model=VoiceCloneResponse)
 async def voice_clone(
-    samples: list[UploadFile] = File(..., description="Recorded script + prompt-answer audio clips."),
+    samples: list[UploadFile] = File(..., description="The recorded script-reading audio clip."),
     voice_name: str = Form("My InnerVoice"),
 ) -> VoiceCloneResponse:
     """
@@ -152,7 +149,10 @@ async def voice_clone(
     if not samples:
         raise HTTPException(status_code=400, detail="At least one audio recording is required.")
     if len(samples) > MAX_SAMPLES:
-        raise HTTPException(status_code=400, detail=f"Please send at most {MAX_SAMPLES} recordings.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Please send at most {MAX_SAMPLES} recording{'s' if MAX_SAMPLES != 1 else ''}.",
+        )
 
     voice_samples: list[VoiceSample] = []
     for index, upload in enumerate(samples):
