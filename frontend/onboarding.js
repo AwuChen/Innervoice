@@ -104,7 +104,21 @@
 
   async function ensureMic() {
     if (mediaStream) return mediaStream;
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    try {
+      // Browsers turn on echoCancellation/noiseSuppression/autoGainControl
+      // by default -- great for video calls, bad for voice cloning: they're
+      // tuned to suppress/compress the signal for robustness, not fidelity,
+      // and often introduce artifacts or "pump" the volume during pauses.
+      // Ask for the rawest signal the browser will give us.
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+    } catch (err) {
+      // Some browsers reject unsupported constraint combinations outright;
+      // fall back to a plain request rather than failing to record at all.
+      console.warn('[InnerVoice] falling back to default audio constraints', err);
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
     return mediaStream;
   }
 
@@ -141,7 +155,13 @@
     }
 
     const mimeType = pickMimeType();
-    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    // Without an explicit bitrate, browsers often pick a conservative
+    // default tuned for small file size (voice messages, etc.), which adds
+    // more lossy compression on top of an already-lossy codec. 256kbps is
+    // comfortably above what Opus/AAC need to sound transparent for speech.
+    const recorderOptions = { audioBitsPerSecond: 256000 };
+    if (mimeType) recorderOptions.mimeType = mimeType;
+    const recorder = new MediaRecorder(stream, recorderOptions);
     const chunks = [];
 
     recorder.addEventListener('dataavailable', (e) => {

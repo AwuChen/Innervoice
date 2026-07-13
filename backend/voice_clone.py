@@ -27,6 +27,7 @@ _TIMEOUT = httpx.Timeout(connect=10.0, read=90.0, write=60.0, pool=10.0)
 
 _ADD_VOICE_URL = "https://api.elevenlabs.io/v1/voices/add"
 _DELETE_VOICE_URL = "https://api.elevenlabs.io/v1/voices/{voice_id}"
+_AUDIO_ISOLATION_URL = "https://api.elevenlabs.io/v1/audio-isolation"
 
 
 @dataclass
@@ -40,10 +41,47 @@ class VoiceCloneError(RuntimeError):
     """Raised when ElevenLabs rejects or fails an Instant Voice Clone request."""
 
 
+async def _isolate_audio(sample: VoiceSample) -> VoiceSample:
+    """
+    Run a recording through ElevenLabs' Audio Isolation model to strip room
+    noise, hum, and other background interference before it ever reaches
+    Instant Voice Clone -- background noise picked up by a laptop/phone mic
+    is one of the biggest, most common causes of an inaccurate-sounding
+    clone, and this fixes it without asking the user to have a treated
+    recording booth.
+
+    Best-effort: on any failure (short clip, transient API error, etc.) this
+    just returns the original sample untouched so cloning can still proceed.
+    """
+    settings = get_settings()
+    headers = {"xi-api-key": settings.elevenlabs_api_key}
+    files = {"audio": (sample.filename, sample.data, sample.content_type or "application/octet-stream")}
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            response = await client.post(_AUDIO_ISOLATION_URL, headers=headers, files=files)
+        if response.status_code >= 400:
+            logger.warning(
+                "Audio isolation failed (%s), using the original recording: %s",
+                response.status_code,
+                response.text[:300],
+            )
+            return sample
+        # Isolation always hands back clean audio as MP3 regardless of the
+        # input container, so make sure the filename/content-type we send on
+        # to Instant Voice Clone actually match the bytes we're sending.
+        stem = sample.filename.rsplit(".", 1)[0]
+        return VoiceSample(filename=f"{stem}_isolated.mp3", content_type="audio/mpeg", data=response.content)
+    except Exception:
+        logger.exception("Audio isolation request failed, using the original recording")
+        return sample
+
+
 async def create_instant_voice_clone(
     samples: list[VoiceSample],
     name: str,
     description: str = "",
+    isolate_background_noise: bool = True,
 ) -> str:
     """
     Upload `samples` (raw audio bytes, e.g. from MediaRecorder in the
@@ -59,6 +97,9 @@ async def create_instant_voice_clone(
         )
     if not samples:
         raise VoiceCloneError("No audio samples were provided to clone from.")
+
+    if isolate_background_noise:
+        samples = [await _isolate_audio(sample) for sample in samples]
 
     headers = {"xi-api-key": settings.elevenlabs_api_key}
     data = {"name": name.strip() or "InnerVoice user"}

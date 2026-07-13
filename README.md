@@ -80,9 +80,11 @@ described above once it's done:
    deadpan answer) tended to introduce accent/tone drift into the clone
    instead of helping it.
 3. On submit, the browser `POST`s that recording as `multipart/form-data` to
-   `POST /api/voice/clone`. The backend (`backend/voice_clone.py`) calls
-   ElevenLabs' `POST /v1/voices/add` (Instant Voice Clone) with that sample,
-   gets back a `voice_id`, and persists it via `backend/voice_profile.py`.
+   `POST /api/voice/clone`. The backend first runs it through ElevenLabs'
+   Audio Isolation model (`POST /v1/audio-isolation`) to strip background
+   noise, then calls `POST /v1/voices/add` (Instant Voice Clone) with the
+   cleaned sample, gets back a `voice_id`, and persists it via
+   `backend/voice_profile.py`.
 4. `backend/tts.py` whispers back using the cloned `voice_id` from that
    moment on, instead of the static `ELEVENLABS_VOICE_ID` fallback.
 5. The page navigates back to `/` -- the editor loads normally and the
@@ -94,6 +96,38 @@ This only activates for the ElevenLabs provider (Instant Voice Clone is an
 ElevenLabs feature); if Cartesia is configured instead, `supported: false`
 comes back from `/api/voice/profile` and onboarding stays out of the way
 entirely, relying on the statically configured `CARTESIA_VOICE_ID`.
+
+#### Getting a good clone (Instant Voice Clone is sensitive to input quality)
+
+Instant Voice Clone results are noticeably inconsistent run-to-run, and
+almost always for the same handful of input-quality reasons -- these are
+addressed directly in this flow, but worth understanding if a clone still
+doesn't sound right:
+
+- **Browser audio processing.** By default, `getUserMedia({ audio: true })`
+  turns on `echoCancellation`, `noiseSuppression`, and `autoGainControl` --
+  all tuned for VoIP call robustness, not fidelity, and all capable of
+  introducing artifacts or "pumping" volume during natural pauses. This
+  flow explicitly disables all three (`frontend/onboarding.js`) and asks
+  for the rawest signal the browser will give up.
+- **Background noise.** A quiet room and a mic held a few inches from your
+  mouth matters more than almost anything else. On top of that, every
+  recording is now run through ElevenLabs' Audio Isolation model
+  server-side before cloning (`backend/voice_clone.py`), which strips room
+  hum/hiss that a browser mic alone won't filter out.
+- **Recording length.** ElevenLabs treats ~1 minute as a floor, not a
+  target -- more clean audio (up to a few minutes) consistently helps. The
+  reading script (`backend/voice_onboarding_content.py`) targets ~90-120
+  seconds at a natural pace rather than the ~30s a short passage produces.
+- **Compression.** `MediaRecorder` defaults to a conservative bitrate
+  tuned for small file sizes; this flow requests 256kbps explicitly so the
+  browser-side codec isn't adding extra lossy compression on top of an
+  already-lossy mic signal.
+- **Mixed delivery styles.** Recording multiple short, differently-toned
+  clips (e.g. a scripted reading *plus* a joking, deadpan answer to a
+  prompt) can measurably confuse the clone's accent/tone consistency more
+  than the extra data helps -- hence one single, consistently-delivered
+  reading rather than several.
 
 ## Setup
 
