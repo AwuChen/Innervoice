@@ -42,6 +42,66 @@
     #editor {
       caret-color: #e5c98f;
     }
+
+    /* Persona carousel: no visible control at all -- you drag directly on
+       the wordmark itself. A vertical reel of persona names sits where the
+       old suffix ("Voice") used to be; dragging up/down spins it and it
+       snaps to the nearest persona on release. A soft top/bottom mask keeps
+       neighboring names as a faint peek (the only affordance that hints
+       "this is draggable"), rather than a literal slider UI. */
+    .wordmark {
+      cursor: grab;
+      touch-action: none;
+    }
+    .wordmark.dragging {
+      cursor: grabbing;
+    }
+
+    .persona-carousel {
+      position: relative;
+      display: inline-block;
+      overflow: hidden;
+      vertical-align: bottom;
+      -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        rgba(0, 0, 0, 0.35) 24%,
+        black 42%,
+        black 58%,
+        rgba(0, 0, 0, 0.35) 76%,
+        transparent 100%
+      );
+      mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        rgba(0, 0, 0, 0.35) 24%,
+        black 42%,
+        black 58%,
+        rgba(0, 0, 0, 0.35) 76%,
+        transparent 100%
+      );
+    }
+
+    .persona-carousel-track {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      will-change: transform;
+      transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .persona-carousel-track.no-transition {
+      transition: none;
+    }
+
+    .persona-carousel-item {
+      display: block;
+      color: #d4d4d4; /* matches the old text-neutral-300 suffix color */
+      white-space: nowrap;
+      line-height: inherit;
+    }
+    .persona-carousel-item.persona-carousel-spacer {
+      visibility: hidden;
+    }
   </style>
 </head>
 <body class="bg-[#0b0b0d] text-neutral-200 min-h-screen flex flex-col items-center justify-center antialiased">
@@ -60,9 +120,20 @@
   </div>
 
   <main class="w-full max-w-2xl px-8 flex flex-col items-center">
-    <h1 class="text-sm font-medium tracking-[0.3em] text-neutral-500 uppercase mb-10 select-none">
-      Inner<span class="text-neutral-300">Voice</span>
+    <h1
+      id="wordmark"
+      class="wordmark flex items-center text-sm font-medium tracking-[0.3em] text-neutral-500 uppercase select-none mb-2"
+      title="Drag to steer the inner voice"
+    >
+      <span>Inner</span>
+      <span id="persona-carousel" class="persona-carousel">
+        <span id="persona-carousel-track" class="persona-carousel-track"></span>
+      </span>
     </h1>
+    <div
+      id="persona-tagline"
+      class="text-[11px] text-neutral-600 italic mb-8 h-4 opacity-0 transition-opacity duration-300 select-none"
+    ></div>
 
     <textarea
       id="editor"

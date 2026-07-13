@@ -25,7 +25,20 @@
   const MIN_CONTEXT_CHARS = 6; // mirrors backend MIN_CONTEXT_CHARS
   const FADE_OUT_SECONDS = 0.15; // quick, unobtrusive fade when interrupted
   const PREDICT_ENDPOINT = '/api/predict';
+  const PERSONAS_ENDPOINT = '/api/personas';
   const CAPTION_VISIBLE_MS = 4500;
+  const PERSONA_TAGLINE_VISIBLE_MS = 2500;
+  const PERSONA_STORAGE_KEY = 'innervoice.personaIndex';
+  const CAROUSEL_ROWS_VISIBLE = 3; // odd, so the active persona sits dead-center
+
+  // Used only if /api/personas can't be reached; kept in sync with
+  // backend/personas.py so the slider still works offline/degraded.
+  const FALLBACK_PERSONAS = [
+    { id: 'voice', label: 'Voice', tagline: 'Your intuitive undercurrent.' },
+    { id: 'mentor', label: 'Mentor', tagline: 'Nudges you toward clarity and growth.' },
+    { id: 'friend', label: 'Friend', tagline: 'Warm, validating, always on your side.' },
+    { id: 'demon', label: 'Demon', tagline: 'Cynical, doubtful, quick to second-guess.' },
+  ];
 
   // ---------------------------------------------------------------------
   // DOM refs
@@ -34,6 +47,10 @@
   const statusDot = document.getElementById('status-dot');
   const statusLabel = document.getElementById('status-label');
   const captionEl = document.getElementById('whisper-caption');
+  const wordmarkEl = document.getElementById('wordmark');
+  const personaCarouselEl = document.getElementById('persona-carousel');
+  const personaCarouselTrackEl = document.getElementById('persona-carousel-track');
+  const personaTaglineEl = document.getElementById('persona-tagline');
 
   // ---------------------------------------------------------------------
   // Status indicator (tiny, top-right — never intrusive)
@@ -72,6 +89,177 @@
     captionTimer = setTimeout(() => {
       captionEl.style.opacity = '0';
     }, 300);
+  }
+
+  // ---------------------------------------------------------------------
+  // Persona steering: there is no visible slider or button at all -- you
+  // drag directly on the wordmark. The suffix ("Voice"/"Mentor"/...) is a
+  // vertical reel of every persona name; dragging up/down spins it like a
+  // carousel/slot wheel and it snaps to the nearest persona on release.
+  // Changing personas swaps which "inner voice" system prompt the backend
+  // uses (see backend/personas.py) -- it's purely a text-steering control,
+  // never touching the TTS voice itself.
+  // ---------------------------------------------------------------------
+  let personas = FALLBACK_PERSONAS;
+  let personaIndex = 0;
+  let itemHeightPx = 0;
+  let personaTaglineTimer = null;
+
+  let isDragging = false;
+  let dragStartY = 0;
+  let dragStartOffset = 0;
+  let liveOffset = 0;
+
+  function showPersonaTagline(text) {
+    if (!text) return;
+    clearTimeout(personaTaglineTimer);
+    personaTaglineEl.textContent = text;
+    personaTaglineEl.style.opacity = '1';
+    personaTaglineTimer = setTimeout(() => {
+      personaTaglineEl.style.opacity = '0';
+    }, PERSONA_TAGLINE_VISIBLE_MS);
+  }
+
+  // The track is [spacer, item0, item1, ..., itemN-1, spacer]. At
+  // translateY = -index * itemHeightPx, row `index` (offset by the leading
+  // spacer) lands exactly in the middle of the 3-row visible window.
+  function offsetForIndex(index) {
+    return -index * itemHeightPx;
+  }
+
+  function clampOffset(offset) {
+    const min = offsetForIndex(personas.length - 1);
+    const max = offsetForIndex(0);
+    return Math.min(max, Math.max(min, offset));
+  }
+
+  function applyPersona(index, { silent = false } = {}) {
+    const clamped = Math.max(0, Math.min(personas.length - 1, index));
+    personaIndex = clamped;
+    const persona = personas[personaIndex];
+    if (!persona) return;
+
+    liveOffset = offsetForIndex(personaIndex);
+    personaCarouselTrackEl.style.transform = `translateY(${liveOffset}px)`;
+    if (!silent) showPersonaTagline(persona.tagline);
+
+    try {
+      window.localStorage.setItem(PERSONA_STORAGE_KEY, String(personaIndex));
+    } catch {
+      /* localStorage unavailable (e.g. private mode); persona just won't persist. */
+    }
+  }
+
+  function buildCarousel() {
+    personaCarouselTrackEl.innerHTML = '';
+
+    const firstLabel = personas.length > 0 ? personas[0].label : '';
+    const lastLabel = personas.length > 0 ? personas[personas.length - 1].label : '';
+
+    const spacerTop = document.createElement('span');
+    spacerTop.className = 'persona-carousel-item persona-carousel-spacer';
+    spacerTop.textContent = firstLabel || '\u00A0';
+    personaCarouselTrackEl.appendChild(spacerTop);
+
+    personas.forEach((persona) => {
+      const item = document.createElement('span');
+      item.className = 'persona-carousel-item';
+      item.textContent = persona.label;
+      personaCarouselTrackEl.appendChild(item);
+    });
+
+    const spacerBottom = document.createElement('span');
+    spacerBottom.className = 'persona-carousel-item persona-carousel-spacer';
+    spacerBottom.textContent = lastLabel || '\u00A0';
+    personaCarouselTrackEl.appendChild(spacerBottom);
+
+    let maxWidth = 0;
+    Array.from(personaCarouselTrackEl.children).forEach((child) => {
+      maxWidth = Math.max(maxWidth, child.getBoundingClientRect().width);
+    });
+    const sample = personaCarouselTrackEl.children[1] || personaCarouselTrackEl.children[0];
+    itemHeightPx = (sample && sample.getBoundingClientRect().height) || 20;
+
+    personaCarouselEl.style.width = `${Math.ceil(maxWidth)}px`;
+    personaCarouselEl.style.height = `${itemHeightPx * CAROUSEL_ROWS_VISIBLE}px`;
+  }
+
+  function onWordmarkPointerDown(event) {
+    isDragging = true;
+    dragStartY = event.clientY;
+    dragStartOffset = offsetForIndex(personaIndex);
+    liveOffset = dragStartOffset;
+    wordmarkEl.classList.add('dragging');
+    personaCarouselTrackEl.classList.add('no-transition');
+    try {
+      wordmarkEl.setPointerCapture(event.pointerId);
+    } catch {
+      /* no-op */
+    }
+  }
+
+  function onWordmarkPointerMove(event) {
+    if (!isDragging) return;
+    const deltaY = event.clientY - dragStartY;
+    liveOffset = clampOffset(dragStartOffset + deltaY);
+    personaCarouselTrackEl.style.transform = `translateY(${liveOffset}px)`;
+  }
+
+  function endWordmarkDrag() {
+    if (!isDragging) return;
+    isDragging = false;
+    wordmarkEl.classList.remove('dragging');
+    personaCarouselTrackEl.classList.remove('no-transition');
+
+    const draggedIndex = Math.round(-liveOffset / itemHeightPx);
+    applyPersona(draggedIndex);
+  }
+
+  function attachDragHandlers() {
+    wordmarkEl.addEventListener('pointerdown', onWordmarkPointerDown);
+    wordmarkEl.addEventListener('pointermove', onWordmarkPointerMove);
+    wordmarkEl.addEventListener('pointerup', endWordmarkDrag);
+    wordmarkEl.addEventListener('pointercancel', endWordmarkDrag);
+  }
+
+  function initPersonaCarousel() {
+    buildCarousel();
+
+    let storedIndex = 0;
+    try {
+      storedIndex = parseInt(window.localStorage.getItem(PERSONA_STORAGE_KEY), 10);
+    } catch {
+      storedIndex = 0;
+    }
+    if (Number.isNaN(storedIndex)) storedIndex = 0;
+    storedIndex = Math.max(0, Math.min(personas.length - 1, storedIndex));
+
+    // Sync the reel to the stored persona without transition/tagline flash
+    // on initial page load, then re-enable the snap animation.
+    personaCarouselTrackEl.classList.add('no-transition');
+    applyPersona(storedIndex, { silent: true });
+    requestAnimationFrame(() => personaCarouselTrackEl.classList.remove('no-transition'));
+
+    attachDragHandlers();
+  }
+
+  async function loadPersonas() {
+    try {
+      const response = await fetch(PERSONAS_ENDPOINT);
+      if (response.ok) {
+        const fetched = await response.json();
+        if (Array.isArray(fetched) && fetched.length > 0) {
+          personas = fetched;
+        }
+      }
+    } catch (err) {
+      console.warn('[InnerVoice] failed to load personas, using fallback list', err);
+    }
+    initPersonaCarousel();
+  }
+
+  function currentPersonaId() {
+    return (personas[personaIndex] && personas[personaIndex].id) || 'voice';
   }
 
   // ---------------------------------------------------------------------
@@ -316,7 +504,7 @@
       response = await fetch(PREDICT_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: contextText }),
+        body: JSON.stringify({ text: contextText, persona: currentPersonaId() }),
         signal: activeAbortController.signal,
       });
     } catch (err) {
@@ -385,4 +573,5 @@
   });
 
   setStatus('listening');
+  loadPersonas();
 })();
