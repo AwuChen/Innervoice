@@ -26,6 +26,7 @@
   const FADE_OUT_SECONDS = 0.15; // quick, unobtrusive fade when interrupted
   const PREDICT_ENDPOINT = '/api/predict';
   const PERSONAS_ENDPOINT = '/api/personas';
+  const CONFIG_ENDPOINT = '/api/config';
   const CAPTION_VISIBLE_MS = 4500;
   const PERSONA_TAGLINE_VISIBLE_MS = 2500;
   const PERSONA_STORAGE_KEY = 'innervoice.personaIndex';
@@ -276,6 +277,7 @@
       this.sourceNode = null;
       this.mediaSource = null;
       this.fadeTimer = null;
+      this.pitchRate = 1.0;
     }
 
     /** Call this as early as possible (e.g. first keydown) to capture the
@@ -284,12 +286,29 @@
       this._ensureContext();
     }
 
+    /** Set once from the voice-match test's persisted tuning (see
+     * backend/voice_profile.py) so the live whisper reflects the same pitch
+     * nudge, not just the standalone test. A small, disclosed speed/pitch
+     * coupling via playbackRate, since ElevenLabs has no pitch parameter. */
+    setPitchRate(rate) {
+      this.pitchRate = rate || 1.0;
+      if (this.audioEl) this._applyPitchRate();
+    }
+
+    _applyPitchRate() {
+      this.audioEl.preservesPitch = false;
+      this.audioEl.mozPreservesPitch = false;
+      this.audioEl.webkitPreservesPitch = false;
+      this.audioEl.playbackRate = this.pitchRate;
+    }
+
     _ensureContext() {
       if (!this.audioCtx) {
         const Ctx = window.AudioContext || window.webkitAudioContext;
         this.audioCtx = new Ctx();
         this.audioEl = new Audio();
         this.audioEl.preload = 'auto';
+        this._applyPitchRate();
         this.gainNode = this.audioCtx.createGain();
         this.sourceNode = this.audioCtx.createMediaElementSource(this.audioEl);
         this.sourceNode.connect(this.gainNode).connect(this.audioCtx.destination);
@@ -572,6 +591,22 @@
     }, DEBOUNCE_MS);
   });
 
+  /** Fetches voice-match-test tuning (backend/voice_profile.py) so the live
+   * editor whisper reflects the same pitch nudge, not just the standalone
+   * test -- see frontend/voice-match.js. */
+  async function loadVoiceProfileConfig() {
+    try {
+      const response = await fetch(CONFIG_ENDPOINT);
+      if (response.ok) {
+        const fetched = await response.json();
+        player.setPitchRate(fetched.pitch_playback_rate);
+      }
+    } catch (err) {
+      console.warn('[InnerVoice] failed to load voice profile config, using defaults', err);
+    }
+  }
+
   setStatus('listening');
+  loadVoiceProfileConfig();
   loadPersonas();
 })();

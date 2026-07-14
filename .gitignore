@@ -5,7 +5,7 @@ venv/
 .env
 .DS_Store
 *.log
-
 # Per-user runtime state (cloned voice id, personality note) -- never commit
 # a real user's data, and the dir may not exist until onboarding runs once.
+logs/
 backend/data/

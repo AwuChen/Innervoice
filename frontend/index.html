@@ -102,17 +102,39 @@
     .persona-carousel-item.persona-carousel-spacer {
       visibility: hidden;
     }
+
+    /* Voice-match test: karaoke-style word highlight, synced to playback via
+       word-level timestamps (see frontend/voice-match.js). */
+    #voice-match-passage .word {
+      transition: color 0.15s ease-out;
+    }
+    #voice-match-passage .word.active {
+      color: #e5c98f; /* matches the editor's caret-gold accent */
+    }
+
+    .voice-match-chip {
+      cursor: pointer;
+      user-select: none;
+    }
+    .voice-match-chip.selected {
+      border-color: #e5c98f;
+      color: #e5c98f;
+    }
   </style>
 </head>
 <body class="bg-[#0b0b0d] text-neutral-200 min-h-screen flex flex-col items-center justify-center antialiased">
 
   <!-- Status indicator: tiny, top-right, never intrusive -->
-  <div class="fixed top-6 right-6 flex items-center gap-3 text-[11px] tracking-wide text-neutral-500 select-none">
+  <div class="fixed top-6 right-6 flex items-center gap-4 text-[11px] tracking-wide text-neutral-500 select-none">
     <button
       id="setup-voice-btn"
       class="hidden underline decoration-dotted hover:text-neutral-300 transition-colors"
       title="Re-record your cloned voice"
     >set up voice</button>
+    <button
+      id="retest-voice-link"
+      class="hidden text-neutral-600 hover:text-neutral-400 transition-colors underline-offset-2 hover:underline"
+    >retest my voice</button>
     <span class="flex items-center gap-2">
       <span id="status-dot" class="w-1.5 h-1.5 rounded-full bg-neutral-600 transition-colors"></span>
       <span id="status-label">listening</span>
@@ -135,14 +157,69 @@
       class="text-[11px] text-neutral-600 italic mb-8 h-4 opacity-0 transition-opacity duration-300 select-none"
     ></div>
 
+    <!-- First-run (and on-demand "retest") voice-match test: reads a passage
+         aloud in the cloned voice, word-highlighted in sync, while the user
+         reads it silently -- see frontend/voice-match.js. Hidden/shown by
+         voice-match.js based on localStorage; the free-form editor below
+         only appears once this is passed or skipped. -->
+    <section id="voice-match" class="hidden w-full flex flex-col items-center" aria-live="polite">
+      <p id="voice-match-status" class="text-sm text-neutral-500 mb-8 text-center max-w-md">
+        Before you start writing, let's check your InnerVoice. Read the passage
+        below in your head — I'll read it back to you.
+      </p>
+
+      <p
+        id="voice-match-passage"
+        class="text-2xl leading-relaxed font-serif text-neutral-200 text-center mb-10 max-w-xl select-none"
+      ></p>
+
+      <button
+        id="voice-match-begin"
+        class="px-5 py-2 rounded-full border border-neutral-700 text-neutral-300 text-sm tracking-wide
+               hover:border-neutral-500 hover:text-neutral-100 transition-colors
+               disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-neutral-700 disabled:hover:text-neutral-300"
+        disabled
+      >Loading your voice…</button>
+
+      <div id="voice-match-result" class="hidden flex flex-col items-center gap-4 mt-2">
+        <p class="text-sm text-neutral-400">Did that match how you hear it in your head?</p>
+        <div class="flex gap-3">
+          <button
+            id="voice-match-yes"
+            class="px-4 py-1.5 rounded-full border border-emerald-800 text-emerald-300 text-sm
+                   hover:border-emerald-600 hover:text-emerald-100 transition-colors"
+          >Yes, that's me</button>
+          <button
+            id="voice-match-no"
+            class="px-4 py-1.5 rounded-full border border-neutral-700 text-neutral-300 text-sm
+                   hover:border-neutral-500 hover:text-neutral-100 transition-colors"
+          >Not quite</button>
+        </div>
+      </div>
+
+      <div id="voice-match-feedback" class="hidden flex flex-col items-center gap-4 mt-2 max-w-md">
+        <p class="text-sm text-neutral-400 text-center">What was off?</p>
+        <div id="voice-match-chips" class="flex flex-wrap gap-2 justify-center"></div>
+        <button
+          id="voice-match-submit"
+          class="px-4 py-1.5 rounded-full border border-neutral-700 text-neutral-300 text-sm
+                 hover:border-neutral-500 hover:text-neutral-100 transition-colors mt-2"
+        >Submit &amp; try again</button>
+      </div>
+
+      <button
+        id="voice-match-skip"
+        class="text-[11px] text-neutral-600 hover:text-neutral-400 transition-colors mt-10 underline-offset-2 hover:underline"
+      >Skip for now</button>
+    </section>
+
     <textarea
       id="editor"
-      class="w-full min-h-[45vh] bg-transparent resize-none outline-none border-none
+      class="hidden w-full min-h-[45vh] bg-transparent resize-none outline-none border-none
              text-2xl leading-relaxed font-serif text-neutral-100 placeholder-neutral-600
              tracking-wide"
       placeholder="Begin writing…"
       spellcheck="false"
-      autofocus
     ></textarea>
   </main>
 
@@ -155,6 +232,7 @@
   ></div>
 
   <script src="voice-gate.js"></script>
+  <script src="voice-match.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

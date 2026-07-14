@@ -22,7 +22,15 @@ Env vars:
     ANTHROPIC_MODEL         - default: claude-haiku-4-5-20251001
     CARTESIA_MODEL          - default: sonic-2
     MAX_CONTINUATION_WORDS  - default: 15
+    VOICE_TEST_PREROLL_MS   - default: 600 (voice-match test, see below)
     CORS_ORIGINS            - comma-separated list, default: "*"
+
+    Voice-match test: a first-run read-along test where the cloned voice
+    reads a passage back in sync with the user reading it silently, so
+    they can flag if it doesn't match their inner voice (see
+    backend/voice_profile.py). VOICE_TEST_PREROLL_MS is the delay between
+    tapping "Begin" and playback/word-highlight actually starting -- a
+    short beat to settle before the karaoke-style read-along begins.
 """
 
 from __future__ import annotations
@@ -57,6 +65,12 @@ class Settings(BaseSettings):
     # --- Behavior tuning ---
     max_continuation_words: int = 15
     min_context_chars: int = 6  # don't bother predicting on near-empty input
+
+    # --- Voice-match test ---
+    # Delay between the user tapping "Begin" on the first-run voice-match
+    # test and the synced read-along (audio + word highlight) actually
+    # starting -- a short beat to settle before the karaoke-style playback.
+    voice_test_preroll_ms: int = 600
 
     # --- Server ---
     cors_origins: str = "*"
