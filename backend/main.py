@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
@@ -30,8 +31,11 @@ from pydantic import BaseModel, Field
 
 from backend.config import get_settings
 from backend.llm import generate_continuation
+from backend.passages import get_passage
 from backend.personas import DEFAULT_PERSONA_ID, PERSONAS
-from backend.tts import stream_speech
+from backend.session_log import log_voice_feedback
+from backend.tts import stream_speech, synthesize_with_timestamps
+from backend.voice_profile import get_voice_settings, apply_feedback as apply_voice_feedback
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("innervoice.main")
@@ -60,10 +64,100 @@ class PredictRequest(BaseModel):
     )
 
 
+class VoiceTestSpeakRequest(BaseModel):
+    passage_id: str = Field(..., description="Id of the passage to speak, from GET /api/voice-test/passage.")
+
+
+class VoiceTestFeedbackRequest(BaseModel):
+    passage_id: str = Field(..., description="Which passage this feedback is about.")
+    matched: bool = Field(..., description="Whether the cloned voice matched the user's inner voice.")
+    issues: list[str] = Field(
+        default_factory=list,
+        description="Feedback tags when matched=false, e.g. 'too_fast', 'pitch_too_high' "
+        "(see backend/voice_profile.py's _FEEDBACK_STEPS for the full set).",
+    )
+
+
 @app.get("/api/personas")
 async def list_personas() -> list[dict]:
     """Persona metadata for the frontend slider (never includes system prompts)."""
     return [persona.public_dict() for persona in PERSONAS.values()]
+
+
+@app.get("/api/config")
+async def get_config() -> dict:
+    """Voice-match test config the frontend needs at load time. Never includes secrets/API keys."""
+    return {
+        "voice_test_preroll_ms": settings.voice_test_preroll_ms,
+        "pitch_playback_rate": get_voice_settings()["pitch_playback_rate"],
+    }
+
+
+@app.get("/api/voice-test/passage")
+async def voice_test_passage(passage_id: Optional[str] = None) -> dict:
+    """
+    A short passage for the first-run voice-match test: the user reads this
+    silently while the cloned voice reads it aloud in sync, to test whether
+    it matches how they hear their own inner voice.
+    """
+    passage = get_passage(passage_id)
+    return {"id": passage.id, "text": passage.text}
+
+
+@app.post("/api/voice-test/speak")
+async def voice_test_speak(request: VoiceTestSpeakRequest) -> dict:
+    """
+    Synthesize the given passage with word-level timing, so the frontend
+    can highlight each word in sync with playback (a karaoke-style
+    read-along) instead of just playing audio after a pause.
+    """
+    passage = get_passage(request.passage_id)
+
+    try:
+        settings.resolved_tts_provider
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        result = await synthesize_with_timestamps(passage.text)
+    except Exception as exc:
+        logger.exception("Voice-test synthesis failed")
+        raise HTTPException(status_code=502, detail="TTS synthesis failed") from exc
+
+    tuned = get_voice_settings()
+    return {
+        "passage_id": passage.id,
+        "audio_base64": result["audio_base64"],
+        "words": result["words"],
+        "voice_settings": tuned,
+        "pitch_playback_rate": tuned["pitch_playback_rate"],
+    }
+
+
+@app.post("/api/voice-test/feedback")
+async def voice_test_feedback(request: VoiceTestFeedbackRequest) -> dict:
+    """
+    Record whether the voice-match test matched, and if not, apply the
+    given feedback tags as nudges to the persisted ElevenLabs voice
+    settings (backend/voice_profile.py) -- these adjustments carry over to
+    the live editor whisper too, not just this test.
+    """
+    old_settings = get_voice_settings()
+    if request.matched or not request.issues:
+        new_settings = old_settings
+    else:
+        result = apply_voice_feedback(request.issues)
+        new_settings = result["new"]
+
+    log_voice_feedback(
+        passage_id=request.passage_id,
+        matched=request.matched,
+        issues=request.issues,
+        old_settings=old_settings,
+        new_settings=new_settings,
+    )
+
+    return {"settings": new_settings, "pitch_playback_rate": new_settings["pitch_playback_rate"]}
 
 
 @app.get("/api/health")
