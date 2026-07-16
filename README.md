@@ -282,6 +282,8 @@ the LLM system prompt used for the continuation (`backend/personas.py`):
 | 1 | **InnerMentor** | clarity, growth, constructive next steps |
 | 2 | **InnerFriend** | warmth, validation, casual encouragement |
 | 3 | **InnerDemon** | cynicism, self-doubt, harsh (but never harmful) critique |
+| 4 | **InnerFutureSelf** | teleabsence: your own voice, further down the timeline |
+| 5 | **InnerAbsent** | teleabsence: someone who isn't physically here with you (kept generic, never impersonating a real person) |
 
 The frontend fetches the persona list from `GET /api/personas` (id/label/
 tagline only — system prompts stay server-side) and sends the selected
@@ -295,6 +297,32 @@ abusive language — it's meant to model a harsh inner critic, not a threat.
 To add a new persona, add one `Persona(...)` entry (id, label, tagline,
 system_prompt) to `PERSONAS` in `backend/personas.py`; the slider range and
 frontend list pick it up automatically, no other file needs to change.
+
+## Research roadmap (experimental)
+
+Several config-gated knobs exist purely to test open research questions
+about InnerVoice as a concept, not to ship as final product behavior --
+see [`docs/research-roadmap.md`](docs/research-roadmap.md) for the full
+writeup (7 questions from a feedback session, related work, and study
+designs):
+
+- **Adaptive whisper duration** (`DURATION_WORDS_PER_INPUT_WORD` in
+  `.env`): the whisper's target length now scales with how much the user
+  has typed, instead of always being a fixed 10-15 words. Every prediction
+  is logged (JSONL under `logs/`, via `backend/session_log.py`) with the
+  input length, target range, and actual output, plus whether the whisper
+  was interrupted before finishing (a cheap accuracy proxy) -- see roadmap
+  item #3.
+- **Caption visibility** (`SHOW_CAPTION`) and **whisper memory**
+  (`ENABLE_WHISPER_MEMORY`, `WHISPER_MEMORY_TURNS`): two independent
+  flags, read by the frontend from `GET /api/config`, that make "does
+  anyone need to see the on-screen text" and "should the context window
+  grow to remember past whispers" directly A/B-testable -- see roadmap
+  item #4.
+- **Teleabsence personas** (`InnerFutureSelf`, `InnerAbsent`): two new
+  entries in the persona carousel exploring whether a voice other than
+  "your own undercurrent" can still feel like a natural innervoice -- see
+  roadmap item #2.
 
 ## Future work
 

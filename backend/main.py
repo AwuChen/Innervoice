@@ -33,7 +33,7 @@ from backend.config import get_settings
 from backend.llm import generate_continuation
 from backend.passages import get_passage
 from backend.personas import DEFAULT_PERSONA_ID, PERSONAS
-from backend.session_log import log_voice_feedback
+from backend.session_log import log_event, log_predict, log_voice_feedback
 from backend.tts import stream_speech, synthesize_with_timestamps
 from backend.voice_clone import VoiceCloneError, VoiceSample, create_instant_voice_clone, delete_voice
 from backend.voice_onboarding_content import (
@@ -75,6 +75,17 @@ class PredictRequest(BaseModel):
         description="Which inner-voice persona to steer the continuation with "
         "(see GET /api/personas for the available ids).",
     )
+    history: list[str] = Field(
+        default_factory=list,
+        description="Recent past whispered continuations, oldest first. Only used "
+        "when ENABLE_WHISPER_MEMORY is on (see docs/research-roadmap.md #4); "
+        "otherwise ignored server-side.",
+    )
+
+
+class EventRequest(BaseModel):
+    event_type: str = Field(..., description="e.g. 'whisper_interrupted', 'whisper_completed', 'self_report'.")
+    payload: dict = Field(default_factory=dict, description="Arbitrary event-specific data.")
 
 
 class VoiceTestSpeakRequest(BaseModel):
@@ -99,19 +110,40 @@ async def list_personas() -> list[dict]:
 
 @app.get("/api/config")
 async def get_config() -> dict:
-    """Voice-match test config the frontend needs at load time. Never includes secrets/API keys."""
+    """
+    Research-knob config the frontend needs at load time (see
+    docs/research-roadmap.md #3/#4). Never includes secrets/API keys.
+    """
     return {
+        "show_caption": settings.show_caption,
+        "enable_whisper_memory": settings.enable_whisper_memory,
+        "whisper_memory_turns": settings.whisper_memory_turns,
+        "enable_echo_reveal": settings.enable_echo_reveal,
+        "echo_reveal_wpm": settings.echo_reveal_wpm,
         "voice_test_preroll_ms": settings.voice_test_preroll_ms,
         "pitch_playback_rate": get_voice_settings()["pitch_playback_rate"],
     }
 
 
+@app.post("/api/event")
+async def report_event(request: EventRequest) -> dict:
+    """
+    Fire-and-forget beacon for frontend-observed events that matter for the
+    research knobs but don't need a response -- e.g. whether a whisper was
+    interrupted before finishing (roadmap #3's accuracy-proxy signal) or a
+    self-report probe answer (roadmap #1's linger-effect probe).
+    """
+    log_event(event_type=request.event_type, payload=request.payload)
+    return {"status": "logged"}
+
+
 @app.get("/api/voice-test/passage")
 async def voice_test_passage(passage_id: Optional[str] = None) -> dict:
     """
-    A short passage for the first-run voice-match test: the user reads this
-    silently while the cloned voice reads it aloud in sync, to test whether
-    it matches how they hear their own inner voice.
+    A short passage for the first-run voice-match test (see
+    docs/research-roadmap.md): the user reads this silently while the
+    cloned voice reads it aloud in sync, to test whether it matches how
+    they hear their own inner voice.
     """
     passage = get_passage(passage_id)
     return {"id": passage.id, "text": passage.text}
@@ -333,11 +365,23 @@ async def predict(request: PredictRequest):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    predicted_text = await generate_continuation(context, request.persona)
+    history = request.history if settings.enable_whisper_memory else None
+    predicted_text, word_range = await generate_continuation(context, request.persona, history=history)
+
+    log_predict(
+        persona_id=request.persona,
+        input_word_count=len(context.split()),
+        target_word_range=word_range,
+        predicted_word_count=len(predicted_text.split()) if predicted_text else 0,
+        predicted_text=predicted_text,
+        show_caption=settings.show_caption,
+        whisper_memory_enabled=settings.enable_whisper_memory,
+    )
+
     if not predicted_text:
         return Response(status_code=204)
 
-    logger.info("Predicted continuation: %r", predicted_text)
+    logger.info("Predicted continuation: %r (target %d-%d words)", predicted_text, *word_range)
 
     async def audio_iterator():
         try:

@@ -20,12 +20,17 @@ from dataclasses import dataclass
 
 # Shared formatting rules appended to every persona's prompt so continuations
 # stay short, clean, and TTS-friendly no matter which persona is active.
+#
+# The length limit used to be a fixed "10 to 15 words" -- it's now a
+# `{min_words}`/`{max_words}` placeholder filled in per-request based on how
+# much the user has typed (see `backend/llm.py` `_target_word_range`), as
+# part of the adaptive-duration research knob (docs/research-roadmap.md #3).
 _SHARED_RULES = """
 Rules (follow strictly):
 - Output ONLY the continuation text. Never repeat or quote what they already wrote.
 - Do not add any preamble, labels, quotation marks, or explanations.
 - Write it so it reads as a natural, grammatical continuation of their last words.
-- STRICT LENGTH LIMIT: 10 to 15 words maximum. Never exceed 15 words.
+- STRICT LENGTH LIMIT: {min_words} to {max_words} words maximum. Never exceed {max_words} words.
 - If the input is too short or ambiguous to continue meaningfully, make your
   best gentle guess anyway -- never refuse and never ask a question back.
 """
@@ -77,17 +82,58 @@ language. Keep it sharp and critical, like a harsh inner critic -- not a
 threat.
 """ + _SHARED_RULES
 
+# --- Teleabsence personas (docs/research-roadmap.md #2) ---------------------
+# Exploring whether a voice other than "your own undercurrent" -- a future
+# self, or someone not physically present -- can feel like a natural
+# innervoice. `InnerAbsent` deliberately stays generic/non-identifying
+# (never impersonating a specific named or deceased person) per the
+# TeleAbsence project's stance against literal generative recreation of an
+# absent person; `InnerFutureSelf` leans the other way, closer to the
+# "Future You" continuity-of-self approach.
+
+FUTURE_SELF_PROMPT = """\
+You are InnerFutureSelf: the user's own voice, but speaking from further
+down their timeline -- older, having lived through more of what they're
+currently working through. You are given the fragment of text the user is
+currently writing, mid-thought.
+
+Your job: continue their exact sentence or train of thought, still in their
+voice, but with the quiet continuity of someone who is them, just later --
+as if their future self recognized this moment and gently continued it.
+Favor phrasing that implies lived perspective ("...and it does work out",
+"...you'll wish you had") without ever explicitly narrating from the future
+or breaking the illusion of being their own thought.
+""" + _SHARED_RULES
+
+ABSENT_PROMPT = """\
+You are InnerAbsent: an inner voice standing in for someone the user cares
+about who is not physically present with them right now -- kept
+deliberately generic, never impersonating any specific named or real
+person. You are given the fragment of text the user is currently writing,
+mid-thought.
+
+Your job: continue their exact sentence or train of thought as that
+person's steady, familiar presence might -- warm and specific in tone but
+never claiming a name, identity, or biographical detail that isn't already
+in the user's own text. Let the continuation carry companionship and
+attentiveness rather than any concrete persona.
+""" + _SHARED_RULES
+
 
 @dataclass(frozen=True)
 class Persona:
     id: str
     label: str  # wordmark suffix shown in the UI, e.g. "Mentor" -> "InnerMentor"
     tagline: str  # short description shown briefly when the slider moves
-    system_prompt: str
+    system_prompt: str  # template: contains {min_words}/{max_words} placeholders
 
     def public_dict(self) -> dict:
         """Metadata safe to expose to the frontend (never the system_prompt)."""
         return {"id": self.id, "label": self.label, "tagline": self.tagline}
+
+    def render_system_prompt(self, min_words: int, max_words: int) -> str:
+        """Fill in the per-request adaptive word-count range (roadmap #3)."""
+        return self.system_prompt.format(min_words=min_words, max_words=max_words)
 
 
 PERSONAS: dict[str, Persona] = {
@@ -114,6 +160,18 @@ PERSONAS: dict[str, Persona] = {
         label="Demon",
         tagline="Cynical, doubtful, quick to second-guess.",
         system_prompt=DEMON_PROMPT,
+    ),
+    "future_self": Persona(
+        id="future_self",
+        label="FutureSelf",
+        tagline="You, further down the timeline.",
+        system_prompt=FUTURE_SELF_PROMPT,
+    ),
+    "absent": Persona(
+        id="absent",
+        label="Absent",
+        tagline="Someone who isn't here with you right now.",
+        system_prompt=ABSENT_PROMPT,
     ),
 }
 

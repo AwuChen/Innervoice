@@ -42,24 +42,84 @@ def _strip_boilerplate(text: str) -> str:
     return text.strip()
 
 
-async def generate_continuation(context: str, persona_id: str = DEFAULT_PERSONA_ID) -> str:
-    """Return a short (10-15 word) continuation of `context`, steered by the
-    given persona's system prompt, or "" on failure."""
+def target_word_range(input_word_count: int) -> tuple[int, int]:
+    """
+    Adaptive whisper-duration knob (docs/research-roadmap.md #3): instead of
+    always targeting a fixed 10-15 words, scale the target with how much the
+    user has typed so far, clamped to [min_continuation_words,
+    max_continuation_words]. Setting `duration_words_per_input_word` to 0
+    reproduces the old fixed-length-at-the-cap behavior.
+
+    Returns an (min_words, max_words) window -- a small band around the
+    scaled target, rather than a single number -- so the model still has a
+    little room, the same way the original "10 to 15" range did.
+    """
+    settings = get_settings()
+    floor, cap = settings.min_continuation_words, settings.max_continuation_words
+
+    if settings.duration_words_per_input_word <= 0:
+        return floor, cap
+
+    target = round(input_word_count * settings.duration_words_per_input_word)
+    target = max(floor, min(cap, target))
+
+    band = 2
+    min_words = max(floor, target - band)
+    max_words = min(cap, max(min_words, target))
+    return min_words, max_words
+
+
+def _with_whisper_memory(context: str, history: list[str] | None) -> str:
+    """
+    Fold recent past whispers into the prompt as a "don't repeat this"
+    note, growing the effective context window with the InnerVoice
+    conversation itself rather than just the user's raw text (roadmap #4).
+    Kept as a plain text prefix (not fake multi-turn messages) since we
+    only have the past *outputs*, not the exact user text at each point.
+    """
+    settings = get_settings()
+    if not settings.enable_whisper_memory or not history:
+        return context
+
+    recent = [h for h in history[-settings.whisper_memory_turns :] if h]
+    if not recent:
+        return context
+
+    memory_note = " / ".join(recent)
+    return f"[Already whispered earlier in this session, do not repeat: {memory_note}]\n\n{context}"
+
+
+async def generate_continuation(
+    context: str,
+    persona_id: str = DEFAULT_PERSONA_ID,
+    history: list[str] | None = None,
+) -> tuple[str, tuple[int, int]]:
+    """Return a (continuation_text, (min_words, max_words)) pair, where the
+    continuation is a short, length-adaptive completion of `context`,
+    steered by the given persona's system prompt. Returns ("", word_range)
+    on failure so callers can still log the target range that was tried.
+
+    `history` (recent past whispered continuations, oldest first) is only
+    used when ENABLE_WHISPER_MEMORY is on -- see `_with_whisper_memory`."""
     settings = get_settings()
     provider = settings.resolved_llm_provider
-    system_prompt = get_persona(persona_id).system_prompt
+    # Word-count target is based on the user's actual input, not the
+    # memory-augmented prompt, so past whispers don't skew the target length.
+    word_range = target_word_range(len(context.split()))
+    system_prompt = get_persona(persona_id).render_system_prompt(*word_range)
+    llm_input = _with_whisper_memory(context, history)
 
     try:
         if provider == "openai":
-            raw = await _generate_openai(context, system_prompt)
+            raw = await _generate_openai(llm_input, system_prompt)
         else:
-            raw = await _generate_anthropic(context, system_prompt)
+            raw = await _generate_anthropic(llm_input, system_prompt)
     except Exception:
         logger.exception("LLM completion failed (provider=%s)", provider)
-        return ""
+        return "", word_range
 
-    cleaned = _clamp_words(_strip_boilerplate(raw), settings.max_continuation_words)
-    return cleaned
+    cleaned = _clamp_words(_strip_boilerplate(raw), word_range[1])
+    return cleaned, word_range
 
 
 async def _generate_openai(context: str, system_prompt: str) -> str:

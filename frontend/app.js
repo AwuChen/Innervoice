@@ -27,6 +27,7 @@
   const PREDICT_ENDPOINT = '/api/predict';
   const PERSONAS_ENDPOINT = '/api/personas';
   const CONFIG_ENDPOINT = '/api/config';
+  const EVENT_ENDPOINT = '/api/event';
   const CAPTION_VISIBLE_MS = 4500;
   const PERSONA_TAGLINE_VISIBLE_MS = 2500;
   const PERSONA_STORAGE_KEY = 'innervoice.personaIndex';
@@ -39,7 +40,69 @@
     { id: 'mentor', label: 'Mentor', tagline: 'Nudges you toward clarity and growth.' },
     { id: 'friend', label: 'Friend', tagline: 'Warm, validating, always on your side.' },
     { id: 'demon', label: 'Demon', tagline: 'Cynical, doubtful, quick to second-guess.' },
+    { id: 'future_self', label: 'FutureSelf', tagline: 'You, further down the timeline.' },
+    { id: 'absent', label: 'Absent', tagline: "Someone who isn't here with you right now." },
   ];
+
+  // ---------------------------------------------------------------------
+  // Research-knob config (docs/research-roadmap.md #3/#4), fetched once
+  // from the backend so this prototype can be A/B'd without a rebuild --
+  // see backend/config.py SHOW_CAPTION / ENABLE_WHISPER_MEMORY.
+  // ---------------------------------------------------------------------
+  let appConfig = {
+    showCaption: true,
+    enableWhisperMemory: false,
+    whisperMemoryTurns: 3,
+    // "Echo Mode" (roadmap #10): reveal the whisper's text word-by-word,
+    // paced to an assumed speaking rate, then leave it on screen instead
+    // of fading -- see startEchoReveal() below.
+    enableEchoReveal: false,
+    echoRevealWpm: 165,
+    pitchPlaybackRate: 1.0,
+  };
+
+  async function loadConfig() {
+    try {
+      const response = await fetch(CONFIG_ENDPOINT);
+      if (response.ok) {
+        const fetched = await response.json();
+        appConfig = {
+          showCaption: fetched.show_caption !== undefined ? !!fetched.show_caption : true,
+          enableWhisperMemory: !!fetched.enable_whisper_memory,
+          whisperMemoryTurns: fetched.whisper_memory_turns || 3,
+          enableEchoReveal: !!fetched.enable_echo_reveal,
+          echoRevealWpm: fetched.echo_reveal_wpm || 165,
+          // Set by the voice-match test's feedback loop (backend/voice_profile.py)
+          // so the live whisper reflects the same pitch tuning, not just the test.
+          pitchPlaybackRate: fetched.pitch_playback_rate || 1.0,
+        };
+      }
+    } catch (err) {
+      console.warn('[InnerVoice] failed to load config, using defaults', err);
+    }
+    player.setPitchRate(appConfig.pitchPlaybackRate);
+  }
+
+  /** Best-effort fire-and-forget beacon for research instrumentation --
+   * never awaited, never allowed to affect the actual product loop. */
+  function reportEvent(eventType, payload) {
+    try {
+      fetch(EVENT_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_type: eventType, payload: payload || {} }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch {
+      /* no-op */
+    }
+  }
+
+  // Rolling memory of recently whispered continuations (roadmap #4's
+  // "does the context window need to grow" question). Only populated/sent
+  // when the backend has ENABLE_WHISPER_MEMORY on.
+  const whisperHistory = [];
+  const WHISPER_HISTORY_MAX = 10;
 
   // ---------------------------------------------------------------------
   // DOM refs
@@ -71,15 +134,26 @@
   }
 
   let captionTimer = null;
-  function showCaption(text) {
-    if (!text) return;
-    clearTimeout(captionTimer);
-    captionEl.textContent = `“${text}”`;
+
+  function setCaptionText(text) {
+    captionEl.textContent = text ? `“${text}”` : '';
+  }
+
+  function playFadeInAnimation() {
     captionEl.classList.remove('animate-fade-in');
     // eslint-disable-next-line no-unused-expressions
     captionEl.offsetHeight; // restart the fade-in animation
     captionEl.classList.add('animate-fade-in');
     captionEl.style.opacity = '1';
+  }
+
+  /** Default (Echo Mode off) behavior: show the whole phrase instantly in
+   * the caption, then fade it out on a fixed timer -- unchanged. */
+  function showCaptionInstant(text) {
+    if (!text || !appConfig.showCaption) return;
+    clearTimeout(captionTimer);
+    setCaptionText(text);
+    playFadeInAnimation();
     captionTimer = setTimeout(() => {
       captionEl.style.opacity = '0';
     }, CAPTION_VISIBLE_MS);
@@ -90,6 +164,109 @@
     captionTimer = setTimeout(() => {
       captionEl.style.opacity = '0';
     }, 300);
+  }
+
+  // ---------------------------------------------------------------------
+  // "Echo Mode" (docs/research-roadmap.md #10): instead of showing the
+  // whisper in a separate caption, it is typed directly into the editor
+  // -- word-by-word, paced to an assumed speaking rate
+  // (`appConfig.echoRevealWpm`) rather than an exact per-word timestamp
+  // sync (see the roadmap doc for that trade-off). Once fully typed it's
+  // just part of the document, rereadable like anything the user typed
+  // themselves -- that's the point of the reinforcement loop.
+  // ---------------------------------------------------------------------
+  let echoRevealRafId = null;
+  let echoRevealToken = 0; // bumped to invalidate any in-flight reveal loop
+  let echoInsertion = null; // { start, end, prefix } -- not-yet-committed range in editor.value
+
+  function cancelEchoReveal() {
+    if (echoRevealRafId) {
+      cancelAnimationFrame(echoRevealRafId);
+      echoRevealRafId = null;
+    }
+    echoRevealToken += 1;
+  }
+
+  function growEchoInsertionTo(revealedText) {
+    if (!echoInsertion) return;
+    const { start, end } = echoInsertion;
+    const value = editor.value;
+    editor.value = value.slice(0, start) + revealedText + value.slice(end);
+    echoInsertion.end = start + revealedText.length;
+    editor.selectionStart = editor.selectionEnd = echoInsertion.end;
+  }
+
+  /** The reveal finished typing (or was force-completed): from now on this
+   * text is indistinguishable from anything the user typed themselves, so
+   * stop tracking it for rollback. */
+  function commitEchoInsertion() {
+    echoInsertion = null;
+  }
+
+  /** Typing resumed while a reveal was still mid-type: remove the
+   * not-yet-committed AI text, preserving whatever the user just typed at
+   * that spot -- "typing always wins" applies to in-editor reveals exactly
+   * like it already does to audio playback. */
+  function rollbackEchoInsertion() {
+    if (!echoInsertion) return;
+    const { start, end } = echoInsertion;
+    const caretNow = editor.selectionStart;
+    const value = editor.value;
+    const safeEnd = Math.min(end, value.length);
+    const typedSinceEnd = Math.max(0, caretNow - safeEnd);
+    editor.value = value.slice(0, start) + value.slice(safeEnd);
+    editor.selectionStart = editor.selectionEnd = Math.min(editor.value.length, start + typedSinceEnd);
+    echoInsertion = null;
+  }
+
+  /**
+   * Starts typing `text` into the editor at the current cursor position,
+   * word-by-word. Cancelable via `isStale()` plus a local generation
+   * token, the same "newer request wins" pattern WhisperPlayer uses.
+   *
+   * @returns {number} this reveal's generation token, for completeEchoReveal().
+   */
+  function startEchoReveal(text, isStale) {
+    if (!text) return null;
+    cancelEchoReveal();
+    const revealGen = echoRevealToken;
+
+    const words = text.split(/\s+/).filter(Boolean);
+    const wordCount = words.length || 1;
+    const revealDurationMs = Math.max(600, (wordCount / appConfig.echoRevealWpm) * 60000);
+
+    const insertStart = editor.selectionStart;
+    const needsLeadingSpace = insertStart > 0 && !/\s$/.test(editor.value.slice(0, insertStart));
+    echoInsertion = { start: insertStart, end: insertStart, prefix: needsLeadingSpace ? ' ' : '' };
+
+    const startTime = performance.now();
+    const tick = () => {
+      if (isStale() || echoRevealToken !== revealGen) return; // superseded, bail silently
+      const fraction = Math.min(1, (performance.now() - startTime) / revealDurationMs);
+      const revealedCount = Math.max(1, Math.round(fraction * wordCount));
+      growEchoInsertionTo(echoInsertion.prefix + words.slice(0, revealedCount).join(' '));
+      if (fraction < 1) {
+        echoRevealRafId = requestAnimationFrame(tick);
+      } else {
+        echoRevealRafId = null;
+        commitEchoInsertion(); // fully typed -- just part of the document now
+      }
+    };
+    echoRevealRafId = requestAnimationFrame(tick);
+    return revealGen;
+  }
+
+  /** Called when the whisper's audio finishes naturally: if the WPM-based
+   * pacing estimate ran slower than the actual audio, snap straight to the
+   * full text and commit it immediately. No-op if the reveal already
+   * finished typing on its own, or was superseded/rolled back. */
+  function completeEchoReveal(revealGen, fullText) {
+    if (revealGen === null || echoRevealToken !== revealGen || !echoInsertion) return;
+    if (echoRevealRafId) cancelAnimationFrame(echoRevealRafId);
+    echoRevealRafId = null;
+    const words = fullText.split(/\s+/).filter(Boolean);
+    growEchoInsertionTo(echoInsertion.prefix + words.join(' '));
+    commitEchoInsertion();
   }
 
   // ---------------------------------------------------------------------
@@ -289,7 +466,7 @@
     /** Set once from the voice-match test's persisted tuning (see
      * backend/voice_profile.py) so the live whisper reflects the same pitch
      * nudge, not just the standalone test. A small, disclosed speed/pitch
-     * coupling via playbackRate, since ElevenLabs has no pitch parameter. */
+     * coupling via playbackRate -- see docs/research-roadmap.md. */
     setPitchRate(rate) {
       this.pitchRate = rate || 1.0;
       if (this.audioEl) this._applyPitchRate();
@@ -480,7 +657,20 @@
   let activeAbortController = null;
   let debounceTimer = null;
 
+  // Tracks the whisper currently playing (if any), so we can tell whether
+  // it was interrupted mid-playback vs. allowed to finish naturally --
+  // the accuracy-proxy signal for the adaptive-duration research question
+  // (docs/research-roadmap.md #3).
+  let activeWhisper = null; // { token, personaId, predictedText }
+
   function invalidatePreviousRequest() {
+    if (activeWhisper) {
+      reportEvent('whisper_interrupted', {
+        persona: activeWhisper.personaId,
+        predicted_text: activeWhisper.predictedText,
+      });
+      activeWhisper = null;
+    }
     currentToken += 1;
     if (activeAbortController) {
       activeAbortController.abort();
@@ -518,12 +708,17 @@
     activeAbortController = new AbortController();
     setStatus('thinking');
 
+    const personaId = currentPersonaId();
     let response;
     try {
       response = await fetch(PREDICT_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: contextText, persona: currentPersonaId() }),
+        body: JSON.stringify({
+          text: contextText,
+          persona: personaId,
+          history: appConfig.enableWhisperMemory ? whisperHistory : [],
+        }),
         signal: activeAbortController.signal,
       });
     } catch (err) {
@@ -554,16 +749,38 @@
       predictedText = encodedPrediction;
     }
 
+    if (appConfig.enableWhisperMemory && predictedText) {
+      whisperHistory.push(predictedText);
+      if (whisperHistory.length > WHISPER_HISTORY_MAX) whisperHistory.shift();
+    }
+
     setStatus('whispering');
-    showCaption(predictedText);
+    let echoRevealGen = null;
+    if (appConfig.enableEchoReveal) {
+      echoRevealGen = startEchoReveal(predictedText, isStale);
+    } else {
+      showCaptionInstant(predictedText);
+    }
+    activeWhisper = { token, personaId, predictedText };
 
     await player.playStream(
       response,
       isStale,
       () => {
         if (!isStale()) {
+          if (activeWhisper && activeWhisper.token === token) {
+            reportEvent('whisper_completed', { persona: personaId, predicted_text: predictedText });
+            activeWhisper = null;
+          }
           setStatus('listening');
-          hideCaptionSoon();
+          if (appConfig.enableEchoReveal) {
+            // Make sure the full whisper actually landed in the editor --
+            // it's now just part of the document, closing the loop
+            // (roadmap #10) -- no fade timer, nothing to hide.
+            completeEchoReveal(echoRevealGen, predictedText);
+          } else {
+            hideCaptionSoon();
+          }
         }
       }
     );
@@ -580,7 +797,14 @@
     invalidatePreviousRequest();
     player.stop({ fade: true });
     setStatus('listening');
-    hideCaptionSoon();
+    cancelEchoReveal();
+    if (echoInsertion) {
+      // Echo Mode was still mid-type -- remove the not-yet-committed AI
+      // text, keeping whatever the user just typed (typing always wins).
+      rollbackEchoInsertion();
+    } else {
+      hideCaptionSoon();
+    }
 
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -591,22 +815,7 @@
     }, DEBOUNCE_MS);
   });
 
-  /** Fetches voice-match-test tuning (backend/voice_profile.py) so the live
-   * editor whisper reflects the same pitch nudge, not just the standalone
-   * test -- see frontend/voice-match.js. */
-  async function loadVoiceProfileConfig() {
-    try {
-      const response = await fetch(CONFIG_ENDPOINT);
-      if (response.ok) {
-        const fetched = await response.json();
-        player.setPitchRate(fetched.pitch_playback_rate);
-      }
-    } catch (err) {
-      console.warn('[InnerVoice] failed to load voice profile config, using defaults', err);
-    }
-  }
-
   setStatus('listening');
-  loadVoiceProfileConfig();
+  loadConfig();
   loadPersonas();
 })();

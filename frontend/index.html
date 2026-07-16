@@ -223,8 +223,15 @@
     ></textarea>
   </main>
 
-  <!-- Subtle whisper caption: the last phrase InnerVoice spoke, fades in/out.
-       Purely optional visual trace of the audio -- never a chat box, never persistent. -->
+  <!-- Subtle whisper caption: the last phrase InnerVoice spoke.
+       Purely optional visual trace of the audio -- never a chat box.
+       Only used when ENABLE_ECHO_REVEAL=false: appears instantly, fades on
+       a fixed timer -- never persistent.
+       "Echo Mode" (ENABLE_ECHO_REVEAL=true, see docs/research-roadmap.md
+       #10) does NOT use this element at all -- instead the whisper is
+       typed directly into #editor, word-by-word, so it becomes part of
+       what the user wrote rather than a separate overlay. All fade/reveal
+       timing is driven from frontend/app.js. -->
   <div
     id="whisper-caption"
     class="fixed bottom-10 left-1/2 -translate-x-1/2 max-w-xl text-center
