@@ -21,16 +21,35 @@ Env vars:
     OPENAI_MODEL            - default: gpt-4o-mini
     ANTHROPIC_MODEL         - default: claude-haiku-4-5-20251001
     CARTESIA_MODEL          - default: sonic-2
-    MAX_CONTINUATION_WORDS  - default: 15
-    VOICE_TEST_PREROLL_MS   - default: 600 (voice-match test, see below)
+    MIN_CONTINUATION_WORDS       - default: 4  (floor for the whisper length)
+    MAX_CONTINUATION_WORDS       - default: 15 (hard cap, never exceeded)
+    DURATION_WORDS_PER_INPUT_WORD - default: 0.6 (research knob, see below)
+    SHOW_CAPTION            - default: true  (research knob, see below)
+    ENABLE_WHISPER_MEMORY   - default: false (research knob, see below)
+    ENABLE_ECHO_REVEAL      - default: false (research knob, see below)
+    ECHO_REVEAL_WPM         - default: 165   (research knob, see below)
+    VOICE_TEST_PREROLL_MS   - default: 600   (voice-match test, see below)
     CORS_ORIGINS            - comma-separated list, default: "*"
 
-    Voice-match test: a first-run read-along test where the cloned voice
-    reads a passage back in sync with the user reading it silently, so
-    they can flag if it doesn't match their inner voice (see
-    backend/voice_profile.py). VOICE_TEST_PREROLL_MS is the delay between
-    tapping "Begin" and playback/word-highlight actually starting -- a
-    short beat to settle before the karaoke-style read-along begins.
+    Research knobs (see docs/research-roadmap.md for the questions these
+    exist to test):
+    - DURATION_WORDS_PER_INPUT_WORD scales the target whisper length with
+      how many words the user has typed so far (clamped between
+      MIN_CONTINUATION_WORDS and MAX_CONTINUATION_WORDS), instead of the
+      old fixed 10-15 word window -- see roadmap #3.
+    - SHOW_CAPTION toggles whether the predicted text is ever shown on
+      screen at all, to test whether the on-screen caption matters once
+      the whisper has been heard -- see roadmap #4.
+    - ENABLE_WHISPER_MEMORY toggles whether recent whispers are fed back
+      into the LLM as prior context (a growing "innervoice conversation"
+      history) instead of each request being stateless -- see roadmap #4.
+    - ENABLE_ECHO_REVEAL turns on "Echo Mode": the predicted text reveals
+      word-by-word in sync with the whisper's audio (instead of appearing
+      instantly), then stays on screen instead of fading, so it can be
+      reread -- testing whether closing this loop reinforces the
+      innervoice -- see roadmap #10. ECHO_REVEAL_WPM is the assumed
+      spoken words-per-minute used only to pace that reveal (not an exact
+      timestamp sync -- see roadmap #10 for why).
 """
 
 from __future__ import annotations
@@ -63,10 +82,23 @@ class Settings(BaseSettings):
     cartesia_model: str = "sonic-2"
 
     # --- Behavior tuning ---
+    min_continuation_words: int = 4
     max_continuation_words: int = 15
     min_context_chars: int = 6  # don't bother predicting on near-empty input
 
-    # --- Voice-match test ---
+    # --- Research knobs (see docs/research-roadmap.md) ---
+    # Target whisper length scales with input length: target_words ~=
+    # round(input_word_count * duration_words_per_input_word), clamped to
+    # [min_continuation_words, max_continuation_words]. Set to 0 to always
+    # target max_continuation_words (the old fixed-length behavior).
+    duration_words_per_input_word: float = 0.6
+    show_caption: bool = True
+    enable_whisper_memory: bool = False
+    whisper_memory_turns: int = 3  # how many past whispers to remember
+    enable_echo_reveal: bool = False  # "Echo Mode": synced word-reveal + persistent readback
+    echo_reveal_wpm: int = 165  # assumed speaking rate used only to pace the reveal estimate
+
+    # --- Voice-match test (see docs/research-roadmap.md) ---
     # Delay between the user tapping "Begin" on the first-run voice-match
     # test and the synced read-along (audio + word highlight) actually
     # starting -- a short beat to settle before the karaoke-style playback.
