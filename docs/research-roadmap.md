@@ -496,6 +496,14 @@ a chance to accumulate on its own.
   honest, I keep thinking about ___") and lets the user simply finish it —
   the same typing → whisper loop as everywhere else, no separate
   onboarding form.
+- **Voice-clone onboarding as context seed.** The Instant Voice Clone
+  flow (`/onboarding.html`) shows a few spoken prompts (feeling / what's
+  on their mind / what they're figuring out / what matters). The user
+  answers them out loud in **one continuous recording**; that single clip
+  both clones the voice and is transcribed (ElevenLabs Scribe) so short
+  facts can seed `user_context`. Separate free-response spoken clips were
+  tried earlier and dropped -- mixing takes with different delivery hurt
+  clone consistency more than they helped.
 - **Insightful opening reflection.** That first prediction is flagged
   `is_opening` (`backend/personas.py`'s opening-turn addendum,
   `backend/llm.py`'s `target_word_range(..., is_opening=True)`), which
@@ -547,4 +555,4 @@ a chance to accumulate on its own.
 | 8 | Proxy ideation (consent-based reframe) | Research design only — explicit ethical guardrail against the covert version |
 | 9 | Multiplayer innervoice (voice-message triage) | Research design + tiered architecture — Tier 0/1 (transcribe + grounded agent) is safe to prototype now, Tier 2 (sender voice clone) needs a consent flow first |
 | 10 | Innervoice emergence + echo reinforcement loop | Detection: research-only (needs EMG/EEG hardware, e.g. AlterEgo). Reinforcement: Prototype: `enable_echo_reveal` types the whisper directly into the editor, word-by-word, in sync with its audio |
-| 11 | Grounding whispers in real context (calibration + guided opener + quiet profile growth) | Prototype: guided opener seeded after voice calibration, `is_opening`-flagged first reflection, background `extract_context_facts` growing a persisted profile (`ENABLE_USER_CONTEXT`, `ENABLE_CONTEXT_EXTRACTION`), `POST /api/context/reset` |
+| 11 | Grounding whispers in real context (calibration + guided opener + quiet profile growth) | Prototype: spoken onboarding prompts in one continuous take → clone + STT→`user_context`; guided opener; background `extract_context_facts`; `POST /api/context/reset` |

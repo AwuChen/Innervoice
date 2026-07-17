@@ -1,20 +1,18 @@
 /**
  * onboarding.js
  * -------------
- * Script for the dedicated `/onboarding.html` page (a real page navigation,
- * not a popup/overlay on top of the editor):
+ * Dedicated `/onboarding.html` page:
  *
  *   1. Fetch /api/voice/profile. If Instant Voice Clone isn't available,
- *      bounce straight back to the editor -- nothing to do here.
- *   2. Read a single short script out loud (MediaRecorder). Just one clean,
- *      consistently-delivered reading -- mixing in separate free-response
- *      recordings tended to introduce tone/accent drift into the clone.
- *   3. POST that recording to /api/voice/clone. The backend runs ElevenLabs
- *      Instant Voice Clone, persists the resulting voice_id, and every
- *      subsequent /api/predict whisper uses it automatically.
- *   4. Navigate back to `/` -- the editor's own boot check (voice-gate.js)
- *      sees the voice is now set and just lets the normal typing/whisper
- *      loop run.
+ *      bounce back to the editor.
+ *   2. Show a few spoken prompts. User hits Record once and answers them
+ *      out loud in order, in ONE continuous take (same natural register
+ *      throughout -- separate free-response clips used to confuse clone
+ *      tone/accent consistency).
+ *   3. POST that single recording to /api/voice/clone. Backend clones the
+ *      voice and, in the background, transcribes the same clip to seed
+ *      user_context (docs/research-roadmap.md #11).
+ *   4. Navigate back to `/`.
  */
 
 (() => {
@@ -27,16 +25,14 @@
   const SCRIPT_SLOT = 'script';
 
   const stepsEl = document.getElementById('onboarding-steps');
-  const scriptTextEl = document.getElementById('onboarding-script-text');
+  const promptsEl = document.getElementById('onboarding-prompts');
   const errorTextEl = document.getElementById('onboarding-error-text');
 
   let mediaStream = null;
   let activeRecording = null; // { recorder, chunks }
   let scriptBlob = null;
+  let contextPrompts = [];
 
-  // -----------------------------------------------------------------------
-  // Step navigation
-  // -----------------------------------------------------------------------
   function renderStepDots(current) {
     stepsEl.innerHTML = '';
     const idx = STEP_ORDER.indexOf(current);
@@ -66,9 +62,23 @@
     window.location.href = '/';
   }
 
-  // -----------------------------------------------------------------------
-  // Recording
-  // -----------------------------------------------------------------------
+  function renderPrompts() {
+    promptsEl.innerHTML = '';
+    contextPrompts.forEach((prompt, i) => {
+      const item = document.createElement('li');
+      item.className = 'rounded-lg border border-neutral-800 px-4 py-3';
+      const label = document.createElement('p');
+      label.className = 'text-[17px] text-neutral-100 font-serif leading-relaxed';
+      label.textContent = `${i + 1}. ${prompt.label}`;
+      const hint = document.createElement('p');
+      hint.className = 'text-[11px] text-neutral-600 mt-1';
+      hint.textContent = prompt.hint || '';
+      item.appendChild(label);
+      item.appendChild(hint);
+      promptsEl.appendChild(item);
+    });
+  }
+
   function pickMimeType() {
     const candidates = [
       'audio/webm;codecs=opus',
@@ -105,41 +115,36 @@
   async function ensureMic() {
     if (mediaStream) return mediaStream;
     try {
-      // Browsers turn on echoCancellation/noiseSuppression/autoGainControl
-      // by default -- great for video calls, bad for voice cloning: they're
-      // tuned to suppress/compress the signal for robustness, not fidelity,
-      // and often introduce artifacts or "pump" the volume during pauses.
-      // Ask for the rawest signal the browser will give us.
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       });
     } catch (err) {
-      // Some browsers reject unsupported constraint combinations outright;
-      // fall back to a plain request rather than failing to record at all.
       console.warn('[InnerVoice] falling back to default audio constraints', err);
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     }
     return mediaStream;
   }
 
-  function recordButton() {
-    return document.querySelector(`.record-btn[data-slot="${SCRIPT_SLOT}"]`);
+  function setRecordingUi(isRecording) {
+    const btn = document.querySelector('[data-step="script"] .record-btn');
+    if (!btn) return;
+    const label = btn.querySelector('.rec-label');
+    const indicator = btn.querySelector('.rec-indicator');
+    if (label) label.textContent = isRecording ? 'Stop' : 'Record';
+    if (indicator) indicator.classList.toggle('animate-pulse-soft', isRecording);
   }
 
-  function setClipStatus(message) {
-    document.querySelector('.clip-status').textContent = message;
+  function setClipStatus(text) {
+    const el = document.querySelector('[data-step="script"] .clip-status');
+    if (el) el.textContent = text || '';
   }
 
-  function updatePreview(blob) {
-    const audioEl = document.querySelector('.preview-audio');
-    if (audioEl) {
-      audioEl.src = URL.createObjectURL(blob);
-      audioEl.classList.remove('hidden');
-    }
+  function updateSubmitEnabled() {
+    const submitBtn = document.querySelector('[data-step="script"] [data-action="submit"]');
+    if (submitBtn) submitBtn.disabled = !scriptBlob;
   }
 
   async function toggleRecording() {
-    const btn = recordButton();
     if (activeRecording) {
       activeRecording.recorder.stop();
       return;
@@ -149,61 +154,45 @@
     try {
       stream = await ensureMic();
     } catch (err) {
-      console.warn('[InnerVoice] mic permission denied', err);
-      setClipStatus("Couldn't access your microphone -- check browser permissions.");
+      showError("Couldn't access your microphone. Check permissions and try again.");
       return;
     }
 
     const mimeType = pickMimeType();
-    // Without an explicit bitrate, browsers often pick a conservative
-    // default tuned for small file size (voice messages, etc.), which adds
-    // more lossy compression on top of an already-lossy codec. 256kbps is
-    // comfortably above what Opus/AAC need to sound transparent for speech.
-    const recorderOptions = { audioBitsPerSecond: 256000 };
-    if (mimeType) recorderOptions.mimeType = mimeType;
-    const recorder = new MediaRecorder(stream, recorderOptions);
     const chunks = [];
-
-    recorder.addEventListener('dataavailable', (e) => {
-      if (e.data && e.data.size > 0) chunks.push(e.data);
-    });
-
-    recorder.addEventListener('stop', () => {
-      scriptBlob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-      activeRecording = null;
-      setRecordButtonState(btn, 'idle');
-      setClipStatus('Saved — you can re-record if you want.');
-      updatePreview(scriptBlob);
-      refreshSubmitButton();
-    });
-
-    recorder.start();
-    activeRecording = { recorder, chunks };
-    setRecordButtonState(btn, 'recording');
-    setClipStatus('Recording… click again to stop.');
-  }
-
-  function setRecordButtonState(btn, state) {
-    if (!btn) return;
-    const label = btn.querySelector('.rec-label');
-    const dot = btn.querySelector('.rec-indicator');
-    if (state === 'recording') {
-      label.textContent = 'Stop';
-      dot.classList.add('animate-pulse-soft');
-    } else {
-      label.textContent = scriptBlob ? 'Re-record' : 'Record';
-      dot.classList.remove('animate-pulse-soft');
+    let recorder;
+    try {
+      recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+    } catch (err) {
+      showError("This browser can't record audio. Try Chrome or Firefox.");
+      return;
     }
+
+    activeRecording = { recorder, chunks };
+    setRecordingUi(true);
+    setClipStatus('Recording… answer each prompt in order');
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.onstop = () => {
+      activeRecording = null;
+      setRecordingUi(false);
+      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
+      scriptBlob = blob;
+      const preview = document.querySelector('[data-step="script"] .preview-audio');
+      if (preview) {
+        preview.src = URL.createObjectURL(blob);
+        preview.classList.remove('hidden');
+      }
+      setClipStatus('Saved — you can re-record if you want.');
+      updateSubmitEnabled();
+    };
+    recorder.start();
   }
 
-  function refreshSubmitButton() {
-    const submitBtn = document.querySelector('[data-step="script"] [data-action="submit"]');
-    if (submitBtn) submitBtn.disabled = !scriptBlob;
-  }
-
-  // -----------------------------------------------------------------------
-  // Submission
-  // -----------------------------------------------------------------------
   async function submitClone() {
     if (!scriptBlob) return;
     goToStep('cloning');
@@ -242,9 +231,6 @@
     goToStep('error');
   }
 
-  // -----------------------------------------------------------------------
-  // Wiring
-  // -----------------------------------------------------------------------
   document.addEventListener('click', (e) => {
     const target = e.target.closest('[data-action]');
     if (!target) return;
@@ -253,6 +239,7 @@
     if (action === 'record') {
       toggleRecording();
     } else if (action === 'start') {
+      renderPrompts();
       goToStep('script');
     } else if (action === 'back') {
       const panel = target.closest('.onboarding-panel');
@@ -268,9 +255,6 @@
     }
   });
 
-  // -----------------------------------------------------------------------
-  // Boot
-  // -----------------------------------------------------------------------
   async function init() {
     let profile;
     try {
@@ -284,11 +268,11 @@
     }
 
     if (!profile.supported) {
-      window.location.href = '/'; // nothing to onboard into; bounce back.
+      window.location.href = '/';
       return;
     }
 
-    scriptTextEl.textContent = profile.reading_script;
+    contextPrompts = profile.context_prompts || [];
     goToStep('welcome');
   }
 

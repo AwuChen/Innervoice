@@ -171,6 +171,22 @@ details that aren't implied. If there's nothing worth noting, output [].
 Output ONLY the JSON array, nothing else -- no preamble, no explanation.
 """
 
+_ONBOARDING_EXTRACTION_PROMPT = """\
+You are extracting a compact private profile from a transcript of someone
+answering these spoken prompts in one continuous recording:
+- Right now, I feel…
+- Something that's been on my mind lately is…
+- What I'm trying to figure out is…
+- Something that really matters to me right now is…
+
+Output a JSON array of 2 to 6 short strings (each under 14 words) capturing
+concrete feelings, themes, or concerns from the transcript. Only include
+what's reasonably said or clearly implied -- never invent biography. If the
+transcript is empty or unusable, output [].
+
+Output ONLY the JSON array, nothing else.
+"""
+
 
 async def extract_context_facts(user_text: str, whisper_text: str) -> list[str]:
     """
@@ -200,7 +216,36 @@ async def extract_context_facts(user_text: str, whisper_text: str) -> list[str]:
     return _parse_fact_list(raw)
 
 
-def _parse_fact_list(raw: str) -> list[str]:
+async def extract_onboarding_facts(transcript: str) -> list[str]:
+    """
+    Pull a compact fact list from the voice-onboarding spoken transcript
+    (roadmap #11). Best-effort -- returns [] on failure so cloning is never
+    blocked by a transcription/LLM hiccup.
+    """
+    transcript = (transcript or "").strip()
+    if not transcript:
+        return []
+
+    settings = get_settings()
+    try:
+        provider = settings.resolved_llm_provider
+    except RuntimeError:
+        return []
+
+    prompt = f"Transcript:\n{transcript}"
+    try:
+        if provider == "openai":
+            raw = await _generate_openai(prompt, _ONBOARDING_EXTRACTION_PROMPT, max_tokens=120, temperature=0.3)
+        else:
+            raw = await _generate_anthropic(prompt, _ONBOARDING_EXTRACTION_PROMPT, max_tokens=120, temperature=0.3)
+    except Exception:
+        logger.exception("Onboarding fact extraction failed (provider=%s)", provider)
+        return []
+
+    return _parse_fact_list(raw, max_facts=6)
+
+
+def _parse_fact_list(raw: str, *, max_facts: int = 2) -> list[str]:
     """Best-effort JSON-array parse; malformed/non-list output -> []."""
     cleaned = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.IGNORECASE).strip()
     try:
@@ -210,7 +255,7 @@ def _parse_fact_list(raw: str) -> list[str]:
     if not isinstance(data, list):
         return []
     facts = [str(item).strip() for item in data if isinstance(item, str) and str(item).strip()]
-    return facts[:2]
+    return facts[:max_facts]
 
 
 async def _generate_openai(

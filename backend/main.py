@@ -30,18 +30,25 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
-from backend.llm import extract_context_facts, generate_continuation
+from backend.llm import extract_context_facts, extract_onboarding_facts, generate_continuation
 from backend.passages import get_passage
 from backend.personas import DEFAULT_PERSONA_ID, PERSONAS
 from backend.session_log import log_context_learned, log_event, log_predict, log_voice_feedback
 from backend.tts import stream_speech, synthesize_with_timestamps
 from backend.user_context import add_facts as add_context_facts, reset as reset_context
-from backend.voice_clone import VoiceCloneError, VoiceSample, create_instant_voice_clone, delete_voice
+from backend.voice_clone import (
+    VoiceCloneError,
+    VoiceSample,
+    create_instant_voice_clone,
+    delete_voice,
+    transcribe_speech,
+)
 from backend.voice_onboarding_content import (
     MAX_SAMPLES,
     MIN_SAMPLES,
     READING_SCRIPT,
     RECOMMENDED_SECONDS,
+    prompts_public,
 )
 from backend.voice_profile import (
     clear_profile,
@@ -254,14 +261,13 @@ async def _extract_and_store_context(user_text: str, whisper_text: str, source: 
 
 
 # --------------------------------------------------------------------------
-# Voice onboarding: record -> Instant Voice Clone -> resume main flow.
+# Voice onboarding: speak through prompts in ONE continuous recording ->
+# Instant Voice Clone (+ transcribe the same clip to seed user_context).
 #
-# This is a one-time (or redo-able) setup step, separate from the hot
-# /api/predict loop above. The frontend calls GET /api/voice/profile on
-# load to decide whether to show the recording UI at all; once cloning
-# succeeds, every subsequent /api/predict call whispers back in that voice
-# (see backend/tts.py, which checks the persisted profile before falling
-# back to the static ELEVENLABS_VOICE_ID).
+# Separate free-response spoken clips were tried and dropped -- mixing
+# takes with different delivery confused clone consistency. One continuous
+# take keeps delivery steadier while still capturing personal content
+# (roadmap #11).
 # --------------------------------------------------------------------------
 
 
@@ -269,7 +275,14 @@ class VoiceProfileResponse(BaseModel):
     supported: bool = Field(..., description="Whether Instant Voice Clone is available at all.")
     has_voice: bool
     voice_name: Optional[str] = None
-    reading_script: str
+    reading_script: str = Field(
+        ...,
+        description="Legacy fallback string; spoken onboarding shows context_prompts instead.",
+    )
+    context_prompts: list[dict] = Field(
+        default_factory=list,
+        description="Spoken prompts the user answers out loud in one continuous take.",
+    )
     min_samples: int
     max_samples: int
     recommended_seconds: int
@@ -299,22 +312,40 @@ async def voice_profile() -> VoiceProfileResponse:
         has_voice=profile.has_voice,
         voice_name=profile.voice_name,
         reading_script=READING_SCRIPT,
+        context_prompts=prompts_public(),
         min_samples=MIN_SAMPLES,
         max_samples=MAX_SAMPLES,
         recommended_seconds=RECOMMENDED_SECONDS,
     )
 
 
+async def _seed_context_from_onboarding_audio(sample: VoiceSample) -> None:
+    """
+    Background task: transcribe the onboarding recording and fold short
+    facts into user_context. Never raises into the request path -- cloning
+    already succeeded by the time this runs.
+    """
+    transcript = await transcribe_speech(sample)
+    if not transcript:
+        return
+    facts = await extract_onboarding_facts(transcript)
+    if facts:
+        add_context_facts(facts)
+        log_context_learned(source="voice_onboarding", facts=facts)
+        logger.info("Seeded %d onboarding context fact(s) from transcript", len(facts))
+
+
 @app.post("/api/voice/clone", response_model=VoiceCloneResponse)
 async def voice_clone(
-    samples: list[UploadFile] = File(..., description="The recorded script-reading audio clip."),
+    background_tasks: BackgroundTasks,
+    samples: list[UploadFile] = File(..., description="One continuous spoken-prompt recording."),
     voice_name: str = Form("My InnerVoice"),
 ) -> VoiceCloneResponse:
     """
-    Runs ElevenLabs Instant Voice Clone on the uploaded recordings and, on
+    Runs ElevenLabs Instant Voice Clone on the uploaded recording and, on
     success, persists the resulting voice_id so the whisper-back pipeline
-    switches to it immediately -- the frontend can then resume the normal
-    typing/whispering flow with no further setup.
+    switches to it immediately. The same audio is transcribed in the
+    background to seed user_context (roadmap #11).
     """
     if not _voice_clone_supported():
         raise HTTPException(
@@ -362,6 +393,10 @@ async def voice_clone(
 
     if previous.voice_id and previous.voice_id != voice_id:
         await delete_voice(previous.voice_id)
+
+    # Same clip that cloned the voice also seeds context -- in the
+    # background so the user isn't blocked waiting on STT + extraction.
+    background_tasks.add_task(_seed_context_from_onboarding_audio, voice_samples[0])
 
     logger.info("Voice onboarding complete: voice_id=%s name=%r", voice_id, voice_name)
     return VoiceCloneResponse(voice_id=voice_id, voice_name=voice_name)

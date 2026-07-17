@@ -28,6 +28,7 @@ _TIMEOUT = httpx.Timeout(connect=10.0, read=90.0, write=60.0, pool=10.0)
 _ADD_VOICE_URL = "https://api.elevenlabs.io/v1/voices/add"
 _DELETE_VOICE_URL = "https://api.elevenlabs.io/v1/voices/{voice_id}"
 _AUDIO_ISOLATION_URL = "https://api.elevenlabs.io/v1/audio-isolation"
+_SPEECH_TO_TEXT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
 
 @dataclass
@@ -75,6 +76,47 @@ async def _isolate_audio(sample: VoiceSample) -> VoiceSample:
     except Exception:
         logger.exception("Audio isolation request failed, using the original recording")
         return sample
+
+
+async def transcribe_speech(sample: VoiceSample) -> str:
+    """
+    Transcribe a recording via ElevenLabs Speech-to-Text (Scribe). Used after
+    voice onboarding so the same spoken answers that clone the voice can also
+    seed `user_context` -- without making the user type them first.
+
+    Returns "" on any failure (logged, never raised): transcription is a
+    nice-to-have for context grounding, never a blocker for cloning itself.
+    """
+    settings = get_settings()
+    if not settings.elevenlabs_api_key or not sample.data:
+        return ""
+
+    headers = {"xi-api-key": settings.elevenlabs_api_key}
+    files = {"file": (sample.filename, sample.data, sample.content_type or "application/octet-stream")}
+    data = {
+        "model_id": "scribe_v2",
+        "language_code": "eng",
+        "tag_audio_events": "false",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            response = await client.post(
+                _SPEECH_TO_TEXT_URL, headers=headers, data=data, files=files
+            )
+        if response.status_code >= 400:
+            logger.warning(
+                "Speech-to-text failed (%s): %s",
+                response.status_code,
+                response.text[:300],
+            )
+            return ""
+        payload = response.json()
+        text = (payload.get("text") or "").strip()
+        return text
+    except Exception:
+        logger.exception("Speech-to-text request failed")
+        return ""
 
 
 async def create_instant_voice_clone(
