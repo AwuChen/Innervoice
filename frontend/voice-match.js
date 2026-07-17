@@ -23,6 +23,20 @@
   const FEEDBACK_ENDPOINT = '/api/voice-test/feedback';
   const CONFIG_ENDPOINT = '/api/config';
 
+  // Guided opener (docs/research-roadmap.md #11): rather than dropping the
+  // user straight into a blank editor after calibration, seed a sentence
+  // stem so their very first thought is a direct, easy-to-answer prompt --
+  // giving InnerVoice real context to reason from immediately, instead of
+  // starting the relationship from zero. `editor.dataset.awaitingOpeningReply`
+  // is how this hands off to app.js (same "leave state on the shared DOM
+  // element" pattern as the hidden/visible toggle below) -- consumed and
+  // cleared on the very next `/api/predict` call.
+  const OPENER_STEMS = [
+    'Right now, I feel ',
+    "Something that's been on my mind lately is ",
+    "If I'm honest, I keep thinking about ",
+  ];
+
   const FEEDBACK_TAGS = [
     { id: 'too_fast', label: 'Too fast' },
     { id: 'too_slow', label: 'Too slow' },
@@ -262,6 +276,37 @@
     return null;
   }
 
+  function seedOpeningPromptIfEditorEmpty() {
+    // Every time the editor is revealed with nothing in it yet -- a first
+    // visit, a completed "retest my voice", or just a plain reload of an
+    // empty draft -- seed a fresh opener rather than a blank page. Never
+    // stomps on an existing draft (that's the only guard that matters;
+    // there's no "only once ever" restriction, since that made this
+    // impossible to re-trigger for local testing/demos).
+    if (editor.value.trim() !== '') return false;
+    const stem = OPENER_STEMS[Math.floor(Math.random() * OPENER_STEMS.length)];
+    editor.value = stem;
+    editor.dataset.awaitingOpeningReply = '1';
+    editor.setSelectionRange(stem.length, stem.length);
+    return true;
+  }
+
+  /** Shared by both "just finished calibration" and "already done it on a
+   * past visit" paths -- makes the editor visible/focused and seeds the
+   * opening prompt whenever the editor is empty, regardless of which path
+   * got here. */
+  function revealEditor() {
+    editor.classList.remove('hidden');
+    retestLink.classList.remove('hidden');
+    const seeded = seedOpeningPromptIfEditorEmpty();
+    editor.focus();
+    if (seeded) {
+      // Re-apply after focus() -- some browsers reset the caret to the
+      // start on focus if it was set while the textarea was display:none.
+      editor.setSelectionRange(editor.value.length, editor.value.length);
+    }
+  }
+
   function markDoneAndRevealEditor() {
     try {
       window.localStorage.setItem(DONE_STORAGE_KEY, '1');
@@ -270,9 +315,7 @@
     }
     stopPlayback();
     voiceMatchSection.classList.add('hidden');
-    editor.classList.remove('hidden');
-    retestLink.classList.remove('hidden');
-    editor.focus();
+    revealEditor();
   }
 
   async function onYesClick() {
@@ -329,9 +372,7 @@
 
     if (alreadyDone) {
       voiceMatchSection.classList.add('hidden');
-      editor.classList.remove('hidden');
-      retestLink.classList.remove('hidden');
-      editor.focus();
+      revealEditor();
     } else {
       await openGate();
     }

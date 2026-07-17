@@ -76,6 +76,17 @@ def log_event(*, event_type: str, payload: dict[str, Any]) -> None:
     _write({"kind": "event", "event_type": event_type, **payload})
 
 
+def log_context_learned(*, source: str, facts: list[str]) -> None:
+    """
+    One record per background context-extraction call that actually
+    produced new facts (roadmap #11) -- the audit trail for what
+    `backend/user_context.py` has quietly learned and when, even though
+    none of this is surfaced in the live UI. `source` is "opening" for the
+    guided first-turn answer or "extraction" for an ordinary background turn.
+    """
+    _write({"kind": "context_learned", "source": source, "facts": facts})
+
+
 def log_voice_feedback(
     *,
     passage_id: str,

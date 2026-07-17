@@ -35,6 +35,20 @@ Rules (follow strictly):
   best gentle guess anyway -- never refuse and never ask a question back.
 """
 
+# Appended (not swapped in) for the very first whisper of a session, which
+# continues a guided opener ("I feel ___") right after voice calibration
+# instead of freeform typing -- see roadmap #11. The point is to spend the
+# extra word budget on a genuine, specific reflection rather than a short
+# reactive continuation, using whatever context is already available.
+_OPENING_TURN_ADDENDUM = """
+
+This is the very first thing they've said this session, completing an
+opening prompt. If background notes about this person are included above
+your input, use them to make this feel like a specific, insightful
+reflection on why they might feel or think this -- not just a short
+reactive continuation. Use the fuller end of your word limit for this one.
+"""
+
 VOICE_PROMPT = """\
 You are InnerVoice: the quiet, intuitive undercurrent of the user's own mind.
 You are given the fragment of text the user is currently writing, mid-thought.
@@ -131,9 +145,13 @@ class Persona:
         """Metadata safe to expose to the frontend (never the system_prompt)."""
         return {"id": self.id, "label": self.label, "tagline": self.tagline}
 
-    def render_system_prompt(self, min_words: int, max_words: int) -> str:
-        """Fill in the per-request adaptive word-count range (roadmap #3)."""
-        return self.system_prompt.format(min_words=min_words, max_words=max_words)
+    def render_system_prompt(self, min_words: int, max_words: int, *, is_opening: bool = False) -> str:
+        """Fill in the per-request adaptive word-count range (roadmap #3),
+        optionally appending the opening-turn addendum (roadmap #11)."""
+        rendered = self.system_prompt.format(min_words=min_words, max_words=max_words)
+        if is_opening:
+            rendered += _OPENING_TURN_ADDENDUM
+        return rendered
 
 
 PERSONAS: dict[str, Persona] = {

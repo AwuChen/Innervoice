@@ -23,18 +23,19 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
-from backend.llm import generate_continuation
+from backend.llm import extract_context_facts, generate_continuation
 from backend.passages import get_passage
 from backend.personas import DEFAULT_PERSONA_ID, PERSONAS
-from backend.session_log import log_event, log_predict, log_voice_feedback
+from backend.session_log import log_context_learned, log_event, log_predict, log_voice_feedback
 from backend.tts import stream_speech, synthesize_with_timestamps
+from backend.user_context import add_facts as add_context_facts, reset as reset_context
 from backend.voice_profile import get_voice_settings, apply_feedback as apply_voice_feedback
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -67,6 +68,12 @@ class PredictRequest(BaseModel):
         description="Recent past whispered continuations, oldest first. Only used "
         "when ENABLE_WHISPER_MEMORY is on (see docs/research-roadmap.md #4); "
         "otherwise ignored server-side.",
+    )
+    is_opening: bool = Field(
+        False,
+        description="True for the very first prediction of a session, completing the "
+        "guided opener shown right after voice calibration (see docs/research-roadmap.md "
+        "#11). Gets a roomier word budget and leans harder on the stored context profile.",
     )
 
 
@@ -192,6 +199,17 @@ async def voice_test_feedback(request: VoiceTestFeedbackRequest) -> dict:
     return {"settings": new_settings, "pitch_playback_rate": new_settings["pitch_playback_rate"]}
 
 
+@app.post("/api/context/reset")
+async def reset_user_context() -> dict:
+    """
+    Erase everything InnerVoice has learned about this person so far (see
+    docs/research-roadmap.md #11 and backend/user_context.py) -- the
+    transparency/erasure counterpart to the fact that this profile grows
+    without a per-turn on-screen disclosure.
+    """
+    return {"facts": reset_context()}
+
+
 @app.get("/api/health")
 async def health() -> dict:
     """Lightweight liveness + config sanity check."""
@@ -207,8 +225,23 @@ async def health() -> dict:
     return {"status": "ok", "llm_provider": llm_provider, "tts_provider": tts_provider}
 
 
+async def _extract_and_store_context(user_text: str, whisper_text: str, source: str) -> None:
+    """
+    Background task (roadmap #11): runs after the whisper response has
+    already been sent, so it can never add latency to the actual product
+    loop. Pulls 0-2 short facts out of this turn and folds them into the
+    persisted profile that future predictions draw on. `source` is just for
+    the research log ("opening" for the guided first-turn answer, which is
+    unusually rich context vs. an ordinary "extraction" turn).
+    """
+    facts = await extract_context_facts(user_text, whisper_text)
+    if facts:
+        add_context_facts(facts)
+        log_context_learned(source=source, facts=facts)
+
+
 @app.post("/api/predict")
-async def predict(request: PredictRequest):
+async def predict(request: PredictRequest, background_tasks: BackgroundTasks):
     """
     Core InnerVoice loop: text context in -> streamed whisper audio out.
 
@@ -229,7 +262,9 @@ async def predict(request: PredictRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     history = request.history if settings.enable_whisper_memory else None
-    predicted_text, word_range = await generate_continuation(context, request.persona, history=history)
+    predicted_text, word_range = await generate_continuation(
+        context, request.persona, history=history, is_opening=request.is_opening
+    )
 
     log_predict(
         persona_id=request.persona,
@@ -245,6 +280,10 @@ async def predict(request: PredictRequest):
         return Response(status_code=204)
 
     logger.info("Predicted continuation: %r (target %d-%d words)", predicted_text, *word_range)
+
+    if settings.enable_context_extraction:
+        source = "opening" if request.is_opening else "extraction"
+        background_tasks.add_task(_extract_and_store_context, context, predicted_text, source)
 
     async def audio_iterator():
         try:

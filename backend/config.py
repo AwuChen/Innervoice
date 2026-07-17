@@ -28,6 +28,10 @@ Env vars:
     ENABLE_WHISPER_MEMORY   - default: false (research knob, see below)
     ENABLE_ECHO_REVEAL      - default: false (research knob, see below)
     ECHO_REVEAL_WPM         - default: 165   (research knob, see below)
+    ENABLE_USER_CONTEXT     - default: true  (research knob, see below)
+    ENABLE_CONTEXT_EXTRACTION - default: true (research knob, see below)
+    OPENING_MIN_WORDS       - default: 15   (research knob, see below)
+    OPENING_MAX_WORDS       - default: 35   (research knob, see below)
     VOICE_TEST_PREROLL_MS   - default: 600   (voice-match test, see below)
     CORS_ORIGINS            - comma-separated list, default: "*"
 
@@ -50,6 +54,18 @@ Env vars:
       innervoice -- see roadmap #10. ECHO_REVEAL_WPM is the assumed
       spoken words-per-minute used only to pace that reveal (not an exact
       timestamp sync -- see roadmap #10 for why).
+    - ENABLE_USER_CONTEXT folds a slowly-growing profile of short facts
+      about this person (backend/user_context.py) into every prediction,
+      instead of every request being context-free -- see roadmap #11.
+      ENABLE_CONTEXT_EXTRACTION controls whether that profile keeps
+      growing in the background (a small extra LLM call after each turn
+      that never blocks the whisper itself); turning it off freezes the
+      profile at whatever it already contains (e.g. just the opening
+      answer) while still using it. OPENING_MIN_WORDS/OPENING_MAX_WORDS
+      give the very first whisper of a session (a reflection on the
+      guided "I feel ___" opener right after voice calibration) more room
+      than the usual adaptive length, since a real reflection needs more
+      than a few words -- see roadmap #11.
 """
 
 from __future__ import annotations
@@ -97,6 +113,15 @@ class Settings(BaseSettings):
     whisper_memory_turns: int = 3  # how many past whispers to remember
     enable_echo_reveal: bool = False  # "Echo Mode": synced word-reveal + persistent readback
     echo_reveal_wpm: int = 165  # assumed speaking rate used only to pace the reveal estimate
+
+    # Slowly-growing per-person context profile (roadmap #11): a compact set
+    # of short facts, seeded by the guided opening prompt and (optionally)
+    # grown quietly in the background from ordinary turns, folded into every
+    # prediction so continuations get more specific over a session.
+    enable_user_context: bool = True
+    enable_context_extraction: bool = True
+    opening_min_words: int = 15
+    opening_max_words: int = 35
 
     # --- Voice-match test (see docs/research-roadmap.md) ---
     # Delay between the user tapping "Begin" on the first-run voice-match

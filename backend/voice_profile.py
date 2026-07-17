@@ -29,8 +29,12 @@ _DATA_DIR = Path(__file__).resolve().parent / "data"
 _PROFILE_PATH = _DATA_DIR / "voice_profile.json"
 
 # Mirrors the values that used to be hardcoded in tts.py's ElevenLabs payload.
+# stability starts on the higher/more-consistent end of its clamp range
+# (rather than ElevenLabs' more expressive default) so sentence-to-sentence
+# delivery doesn't vary as noticeably -- "too_robotic" feedback can still
+# pull it back down if it starts sounding flat.
 DEFAULTS: dict[str, float] = {
-    "stability": 0.45,
+    "stability": 0.65,
     "similarity_boost": 0.85,
     "style": 0.15,
     "speed": 1.0,

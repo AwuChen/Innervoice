@@ -709,6 +709,11 @@
     setStatus('thinking');
 
     const personaId = currentPersonaId();
+    // Guided opener (docs/research-roadmap.md #11): voice-match.js seeds this
+    // flag on the editor right after calibration. Consume it once, for this
+    // request only -- every later request in the session is an ordinary turn.
+    const isOpening = editor.dataset.awaitingOpeningReply === '1';
+    delete editor.dataset.awaitingOpeningReply;
     let response;
     try {
       response = await fetch(PREDICT_ENDPOINT, {
@@ -718,6 +723,7 @@
           text: contextText,
           persona: personaId,
           history: appConfig.enableWhisperMemory ? whisperHistory : [],
+          is_opening: isOpening,
         }),
         signal: activeAbortController.signal,
       });

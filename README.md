@@ -151,8 +151,8 @@ frontend list pick it up automatically, no other file needs to change.
 Several config-gated knobs exist purely to test open research questions
 about InnerVoice as a concept, not to ship as final product behavior --
 see [`docs/research-roadmap.md`](docs/research-roadmap.md) for the full
-writeup (7 questions from a feedback session, related work, and study
-designs):
+writeup (research questions, related work, and study designs, grown from
+an initial feedback session):
 
 - **Adaptive whisper duration** (`DURATION_WORDS_PER_INPUT_WORD` in
   `.env`): the whisper's target length now scales with how much the user
@@ -171,6 +171,17 @@ designs):
   entries in the persona carousel exploring whether a voice other than
   "your own undercurrent" can still feel like a natural innervoice -- see
   roadmap item #2.
+- **Guided opener + growing context profile** (`ENABLE_USER_CONTEXT`,
+  `ENABLE_CONTEXT_EXTRACTION`, `OPENING_MIN_WORDS`/`OPENING_MAX_WORDS`):
+  right after voice calibration, the editor is seeded with a sentence stem
+  ("Right now, I feel ___") instead of a blank page, so the very first
+  whisper has something real to reason about rather than nothing. From
+  then on, a small background LLM call after each turn (never blocking the
+  whisper itself) quietly grows a compact profile of short facts about the
+  person (`backend/user_context.py`, persisted under `backend/data/`,
+  never in git), which every later prediction draws on. `POST
+  /api/context/reset` erases it. See roadmap item #11 for the design and
+  the transparency trade-off this makes.
 
 ## Future work
 

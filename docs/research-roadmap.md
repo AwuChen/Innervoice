@@ -2,9 +2,10 @@
 
 Notes from a feedback session with Sun on how to take InnerVoice further as a
 research project, organized into concrete questions, related work, and next
-steps. Three of these (#2, #3, #4) now have config-gated prototype features
-to make them testable in real sessions — see the "Prototype hook" note under
-each. The rest (#1, #5, #6, #7) are framed as study designs for now.
+steps. Several of these (#2, #3, #4, #10, #11) now have config-gated
+prototype features to make them testable in real sessions — see the
+"Prototype hook" note under each. The rest (#1, #5, #6, #7, and the covert
+version of #8) are framed as study designs for now.
 
 ## 1. Does the voice stay in your mind after you unplug?
 
@@ -453,6 +454,85 @@ latency. If the approximation feels visibly out of sync in practice,
 exact-timestamp sync (accepting either the non-streaming latency hit, or
 a second throwaway alignment-only TTS call) is the natural follow-up.
 
+## 11. Grounding whispers in real context, starting from voice calibration
+
+**Question.** With so little context (a few words of the current
+paragraph, optionally some past whispers), can InnerVoice produce
+whispers that feel like genuine insight rather than plausible-sounding
+filler? Could the voice-calibration moment — currently just "read this
+neutral passage silently" — be used to seed real context instead, could
+the AI actively guide the first few innerthoughts to elicit that context,
+and could the system keep quietly learning about the person as the
+session continues, the way an attentive friend does?
+
+**Related work.**
+- Generative-agent / long-term-memory work for LLM assistants (e.g. Park
+  et al.'s *Generative Agents: Interactive Simulacra of Human Behavior*,
+  and the broader "memory stream" pattern it popularized) shows that
+  retrieving and folding in accumulated observations about a person/agent
+  measurably changes downstream generations toward being more specific
+  and consistent — the same mechanism this item is testing for whispers.
+- This item shares its ethical shape with items #8/#9's discussion of
+  Danaher & Nyholm's **Minimally Viable Permissibility Principle (MVPP)**
+  (consent, minimal positive value, transparency, harm mitigation,
+  contextual integrity) — but with one key difference worth being
+  precise about: #8/#9 are about modeling *someone else*, without or with
+  their consent; this item quietly models *the person using the tool, for
+  their own benefit*, which is a meaningfully lower-risk shape (there's no
+  third party being represented without their knowledge) but doesn't make
+  transparency/erasure irrelevant — see guardrails below.
+
+**Hypothesis.** Whispers grounded in accumulated context about the
+person — especially the very first whisper of a session — will be rated
+as more insightful/"like something I'd actually think" than the current
+context-free continuations, and that gap should be largest right at the
+start of a session, before the ordinary paragraph-level context has had
+a chance to accumulate on its own.
+
+**Prototype hook.** Three pieces, all config-gated:
+- **Guided opener.** Right after voice calibration, instead of a blank
+  editor, `frontend/voice-match.js` seeds a sentence stem ("Right now, I
+  feel ___" / "Something that's been on my mind lately is ___" / "If I'm
+  honest, I keep thinking about ___") and lets the user simply finish it —
+  the same typing → whisper loop as everywhere else, no separate
+  onboarding form.
+- **Insightful opening reflection.** That first prediction is flagged
+  `is_opening` (`backend/personas.py`'s opening-turn addendum,
+  `backend/llm.py`'s `target_word_range(..., is_opening=True)`), which
+  gives it a roomier word budget (`OPENING_MIN_WORDS`/`OPENING_MAX_WORDS`)
+  and an explicit nudge to reason about *why*, using whatever context is
+  already available, instead of reacting generically.
+- **Quiet, growing profile.** After every turn (opening or not), a small
+  background LLM call (`extract_context_facts` in `backend/llm.py`,
+  scheduled via FastAPI `BackgroundTasks` so it never adds latency to the
+  whisper itself) pulls 0-2 short, concrete facts out of what was typed
+  and whispered, and folds them into a persisted profile
+  (`backend/user_context.py`, under `backend/data/`, gitignored). Every
+  later `/api/predict` call folds the accumulated profile back in
+  (`ENABLE_USER_CONTEXT`) — so the system keeps getting more specific
+  about this person without them ever being asked a direct "tell me about
+  yourself" question after the opener, and without any per-turn "now
+  analyzing you" indicator in the UI.
+
+**Guardrails, mapped to MVPP:**
+- *Consent* — implicit rather than per-turn-disclosed (this is the
+  trade-off this item makes), but documented here and in the README
+  rather than left undisclosed; a live "what does InnerVoice know about
+  me" affordance in the UI is a natural follow-up if this graduates past
+  prototype.
+- *Minimal positive value* — the entire point is a measurable quality
+  improvement (the hypothesis above); if it doesn't produce that, it's
+  not worth the trade-off.
+- *Transparency / harm mitigation* — the extraction prompt is restricted
+  to short, low-sensitivity notes "reasonably inferable from the text
+  itself," explicitly forbidden from inventing biographical detail; the
+  full profile is a plain-text JSON file you can open and read yourself,
+  and `POST /api/context/reset` erases it entirely.
+- *Contextual integrity* — the profile never leaves this single local
+  file and is never about anyone other than the person typing; it's not
+  shared, exported, or reused for anything beyond grounding this same
+  person's own whispers.
+
 ## Summary: prototype vs. research-only
 
 | # | Topic | This round |
@@ -467,3 +547,4 @@ a second throwaway alignment-only TTS call) is the natural follow-up.
 | 8 | Proxy ideation (consent-based reframe) | Research design only — explicit ethical guardrail against the covert version |
 | 9 | Multiplayer innervoice (voice-message triage) | Research design + tiered architecture — Tier 0/1 (transcribe + grounded agent) is safe to prototype now, Tier 2 (sender voice clone) needs a consent flow first |
 | 10 | Innervoice emergence + echo reinforcement loop | Detection: research-only (needs EMG/EEG hardware, e.g. AlterEgo). Reinforcement: Prototype: `enable_echo_reveal` types the whisper directly into the editor, word-by-word, in sync with its audio |
+| 11 | Grounding whispers in real context (calibration + guided opener + quiet profile growth) | Prototype: guided opener seeded after voice calibration, `is_opening`-flagged first reflection, background `extract_context_facts` growing a persisted profile (`ENABLE_USER_CONTEXT`, `ENABLE_CONTEXT_EXTRACTION`), `POST /api/context/reset` |
