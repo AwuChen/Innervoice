@@ -127,6 +127,11 @@
   <!-- Status indicator: tiny, top-right, never intrusive -->
   <div class="fixed top-6 right-6 flex items-center gap-4 text-[11px] tracking-wide text-neutral-500 select-none">
     <button
+      id="setup-voice-btn"
+      class="hidden underline decoration-dotted hover:text-neutral-300 transition-colors"
+      title="Re-record your cloned voice"
+    >set up voice</button>
+    <button
       id="retest-voice-link"
       class="hidden text-neutral-600 hover:text-neutral-400 transition-colors underline-offset-2 hover:underline"
     >retest my voice</button>
@@ -233,6 +238,7 @@
            text-sm text-neutral-500 italic opacity-0 transition-opacity duration-700 select-none px-6"
   ></div>
 
+  <script src="voice-gate.js"></script>
   <script src="voice-match.js"></script>
   <script src="app.js"></script>
 </body>
