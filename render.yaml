@@ -21,3 +21,7 @@ services:
         sync: false
       - key: CORS_ORIGINS
         value: "*"
+      - key: ENABLE_ECHO_REVEAL
+        value: "true"
+      - key: ECHO_REVEAL_WPM
+        value: "165"
