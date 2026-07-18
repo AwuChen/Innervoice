@@ -283,7 +283,9 @@ the LLM system prompt used for the continuation (`backend/personas.py`):
 | 2 | **InnerFriend** | warmth, validation, casual encouragement |
 | 3 | **InnerDemon** | cynicism, self-doubt, harsh (but never harmful) critique |
 | 4 | **InnerFutureSelf** | teleabsence: your own voice, further down the timeline |
-| 5 | **InnerAbsent** | teleabsence: someone who isn't physically here with you (kept generic, never impersonating a real person) |
+| 5 | **InnerAbsent** | absent-minded echo: no personality — loops the thought already on the page |
+| 6 | **InnerEnsemble** | auto-picks which persona should chime in next from the current context |
+| 7 | **InnerRap** | turns continuations into bars; "make a rap song" assembles a short song from the draft |
 
 The frontend fetches the persona list from `GET /api/personas` (id/label/
 tagline only — system prompts stay server-side) and sends the selected
@@ -319,10 +321,12 @@ an initial feedback session):
   anyone need to see the on-screen text" and "should the context window
   grow to remember past whispers" directly A/B-testable -- see roadmap
   item #4.
-- **Teleabsence personas** (`InnerFutureSelf`, `InnerAbsent`): two new
-  entries in the persona carousel exploring whether a voice other than
-  "your own undercurrent" can still feel like a natural innervoice -- see
-  roadmap item #2.
+- **Teleabsence / experimental personas** (`InnerFutureSelf`,
+  `InnerAbsent`, `InnerEnsemble`, `InnerRap`): FutureSelf explores
+  continuity-of-self; Absent is deliberately absent-minded (loops the
+  existing thought with no agenda); Ensemble auto-selects the most helpful
+  concrete persona per turn; Rap turns thoughts into bars and can assemble
+  a short song via `POST /api/rap-song` -- see roadmap item #2.
 - **Guided opener + growing context profile** (`ENABLE_USER_CONTEXT`,
   `ENABLE_CONTEXT_EXTRACTION`, `OPENING_MIN_WORDS`/`OPENING_MAX_WORDS`):
   right after voice calibration, the editor is seeded with a sentence stem
@@ -334,6 +338,12 @@ an initial feedback session):
   never in git), which every later prediction draws on. `POST
   /api/context/reset` erases it. See roadmap item #11 for the design and
   the transparency trade-off this makes.
+- **Grounded thought-completion** (`GROUNDED_MIN_WORDS` /
+  `GROUNDED_MAX_WORDS`, `GROUNDED_MIN_FACTS`, `GROUNDED_MIN_INPUT_WORDS`):
+  early / stubby turns stay short and open so the person can fill the
+  blank; once the paragraph has taken shape (or a small profile has
+  accumulated past a stub), whispers get a roomier budget and a prompt
+  nudge to *finish* the thought instead of trailing off.
 
 ## Future work
 

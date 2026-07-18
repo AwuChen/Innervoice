@@ -19,6 +19,7 @@ single command: `uvicorn backend.main:app --reload`.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -30,9 +31,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend.config import get_settings
-from backend.llm import extract_context_facts, extract_onboarding_facts, generate_continuation
+from backend.llm import (
+    extract_context_facts,
+    extract_onboarding_facts,
+    generate_continuation,
+    generate_rap_song,
+)
 from backend.passages import get_passage
-from backend.personas import DEFAULT_PERSONA_ID, PERSONAS
+from backend.personas import DEFAULT_PERSONA_ID, PERSONAS, get_persona
 from backend.session_log import log_context_learned, log_event, log_predict, log_voice_feedback
 from backend.tts import stream_speech, synthesize_with_timestamps
 from backend.user_context import add_facts as add_context_facts, reset as reset_context
@@ -71,8 +77,8 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    # The frontend needs to read this custom header off the streaming response.
-    expose_headers=["X-Predicted-Text"],
+    # The frontend needs to read these custom headers off the streaming response.
+    expose_headers=["X-Predicted-Text", "X-Active-Persona", "X-Active-Persona-Label"],
 )
 
 
@@ -435,12 +441,12 @@ async def predict(request: PredictRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     history = request.history if settings.enable_whisper_memory else None
-    predicted_text, word_range = await generate_continuation(
+    predicted_text, word_range, active_persona_id = await generate_continuation(
         context, request.persona, history=history, is_opening=request.is_opening
     )
 
     log_predict(
-        persona_id=request.persona,
+        persona_id=active_persona_id,
         input_word_count=len(context.split()),
         target_word_range=word_range,
         predicted_word_count=len(predicted_text.split()) if predicted_text else 0,
@@ -452,7 +458,14 @@ async def predict(request: PredictRequest, background_tasks: BackgroundTasks):
     if not predicted_text:
         return Response(status_code=204)
 
-    logger.info("Predicted continuation: %r (target %d-%d words)", predicted_text, *word_range)
+    active_label = get_persona(active_persona_id).label
+    logger.info(
+        "Predicted continuation (%s→%s): %r (target %d-%d words)",
+        request.persona,
+        active_persona_id,
+        predicted_text,
+        *word_range,
+    )
 
     if settings.enable_context_extraction:
         source = "opening" if request.is_opening else "extraction"
@@ -471,9 +484,57 @@ async def predict(request: PredictRequest, background_tasks: BackgroundTasks):
     headers = {
         # Header values must be latin-1 safe, hence the URL-encoding.
         "X-Predicted-Text": quote(predicted_text),
+        "X-Active-Persona": active_persona_id,
+        "X-Active-Persona-Label": quote(active_label),
         "Cache-Control": "no-store",
     }
     return StreamingResponse(audio_iterator(), media_type="audio/mpeg", headers=headers)
+
+
+class RapSongRequest(BaseModel):
+    text: str = Field(..., description="The user's accumulated writing to turn into a rap song.")
+
+
+@app.post("/api/rap-song")
+async def rap_song(request: RapSongRequest) -> dict:
+    """
+    InnerRap end-of-session pass: turn the freewrite into a short structured
+    rap song, then synthesize it with word-level timestamps so the frontend
+    can karaoke-highlight while the cloned voice raps it back. The original
+    draft stays on screen; lyrics are performed in a separate pane.
+    """
+    try:
+        settings.resolved_llm_provider
+        settings.resolved_tts_provider
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    lyrics = await generate_rap_song(request.text)
+    if not lyrics:
+        raise HTTPException(
+            status_code=422,
+            detail="Need a bit more writing before a rap song can come together.",
+        )
+
+    # Strip light markdown the model sometimes adds (**title**) so TTS
+    # alignment stays 1:1 with what we highlight on screen.
+    speak_text = re.sub(r"\*+", "", lyrics).strip()
+    if not speak_text:
+        raise HTTPException(status_code=422, detail="Song came back empty.")
+
+    try:
+        spoken = await synthesize_with_timestamps(speak_text)
+    except Exception as exc:
+        logger.exception("Rap song TTS failed")
+        raise HTTPException(status_code=502, detail="Could not voice the rap song.") from exc
+
+    tuned = get_voice_settings()
+    return {
+        "lyrics": speak_text,
+        "audio_base64": spoken["audio_base64"],
+        "words": spoken["words"],
+        "pitch_playback_rate": tuned["pitch_playback_rate"],
+    }
 
 
 # --- Static frontend (mounted last so it never shadows the /api routes) ---

@@ -122,7 +122,11 @@ async def synthesize_with_timestamps(text: str) -> dict[str, Any]:
 
 async def _synthesize_elevenlabs_with_timestamps(text: str) -> dict[str, Any]:
     settings = get_settings()
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{settings.elevenlabs_voice_id}/with-timestamps"
+    # Prefer the user's Instant Voice Clone when present -- same voice the
+    # live whisper stream uses (see _stream_elevenlabs).
+    profile = await get_profile()
+    voice_id = profile.voice_id or settings.elevenlabs_voice_id
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
 
     headers = {
         "xi-api-key": settings.elevenlabs_api_key,

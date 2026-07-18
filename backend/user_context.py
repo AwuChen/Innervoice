@@ -81,6 +81,16 @@ def add_facts(new_facts: list[str]) -> list[str]:
     return facts
 
 
+def get_facts() -> list[str]:
+    """Return the current fact list (most recent last), or []."""
+    return _read()["facts"]
+
+
+def fact_count() -> int:
+    """How many short facts are currently on file about this person."""
+    return len(_read()["facts"])
+
+
 def get_context_summary() -> str:
     """Compact ' / '-joined string of everything known so far, or '' if empty."""
     return " / ".join(_read()["facts"])

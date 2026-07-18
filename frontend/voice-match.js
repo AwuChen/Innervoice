@@ -18,6 +18,7 @@
   'use strict';
 
   const DONE_STORAGE_KEY = 'innervoice.voiceMatchDone';
+  const PENDING_MATCH_KEY = 'innervoice.pendingVoiceMatch';
   const PASSAGE_ENDPOINT = '/api/voice-test/passage';
   const SPEAK_ENDPOINT = '/api/voice-test/speak';
   const FEEDBACK_ENDPOINT = '/api/voice-test/feedback';
@@ -363,9 +364,33 @@
   (async () => {
     await fetchPreloadMs();
 
+    // After Instant Voice Clone, onboarding sends us here with
+    // ?voiceMatch=1 (and/or pendingVoiceMatch in localStorage) so we always
+    // fine-tune the fresh clone before free writing -- even if the user had
+    // already passed voice-match with a previous / default voice.
+    let forceMatch = false;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      forceMatch =
+        params.get('voiceMatch') === '1' ||
+        window.localStorage.getItem(PENDING_MATCH_KEY) === '1';
+      if (forceMatch) {
+        window.localStorage.removeItem(PENDING_MATCH_KEY);
+        window.localStorage.removeItem(DONE_STORAGE_KEY);
+        if (params.has('voiceMatch')) {
+          params.delete('voiceMatch');
+          const clean =
+            window.location.pathname + (params.toString() ? `?${params}` : '') + window.location.hash;
+          window.history.replaceState({}, '', clean);
+        }
+      }
+    } catch {
+      forceMatch = false;
+    }
+
     let alreadyDone = false;
     try {
-      alreadyDone = window.localStorage.getItem(DONE_STORAGE_KEY) === '1';
+      alreadyDone = !forceMatch && window.localStorage.getItem(DONE_STORAGE_KEY) === '1';
     } catch {
       alreadyDone = false;
     }
@@ -375,6 +400,12 @@
       revealEditor();
     } else {
       await openGate();
+      // loadNewPassage() sets a default status string -- overwrite after it
+      // finishes when we arrived here fresh from Instant Voice Clone.
+      if (forceMatch) {
+        statusEl.textContent =
+          "Your new cloned voice is ready — let's check it matches how you hear yourself. Read the passage below in your head; I'll read it back.";
+      }
     }
   })();
 })();

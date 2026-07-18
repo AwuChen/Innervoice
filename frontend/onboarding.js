@@ -222,8 +222,20 @@
     }
 
     localStorage.removeItem(SKIP_STORAGE_KEY);
+    // Fresh clone must be fine-tuned against the voice-match test before
+    // free writing -- clear any prior "already matched" flag and ask
+    // voice-match.js to open the gate on the next load of `/`.
+    try {
+      localStorage.removeItem('innervoice.voiceMatchDone');
+      localStorage.setItem('innervoice.pendingVoiceMatch', '1');
+    } catch {
+      /* localStorage unavailable; voice-match may skip -- still go home */
+    }
     goToStep('done');
-    setTimeout(() => backToEditor(), 1400);
+    setTimeout(() => {
+      releaseMic();
+      window.location.href = '/?voiceMatch=1';
+    }, 1400);
   }
 
   function showError(message) {

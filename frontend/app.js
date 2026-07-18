@@ -41,8 +41,12 @@
     { id: 'friend', label: 'Friend', tagline: 'Warm, validating, always on your side.' },
     { id: 'demon', label: 'Demon', tagline: 'Cynical, doubtful, quick to second-guess.' },
     { id: 'future_self', label: 'FutureSelf', tagline: 'You, further down the timeline.' },
-    { id: 'absent', label: 'Absent', tagline: "Someone who isn't here with you right now." },
+    { id: 'absent', label: 'Absent', tagline: 'Absent-minded: loops the thought already on the page.' },
+    { id: 'ensemble', label: 'Ensemble', tagline: 'Auto-picks which inner voice should chime in next.', auto_select: true },
+    { id: 'rap', label: 'Rap', tagline: 'Turns your thoughts into bars.' },
   ];
+
+  const RAP_SONG_ENDPOINT = '/api/rap-song';
 
   // ---------------------------------------------------------------------
   // Research-knob config (docs/research-roadmap.md #3/#4), fetched once
@@ -108,6 +112,7 @@
   // DOM refs
   // ---------------------------------------------------------------------
   const editor = document.getElementById('editor');
+  const statusChip = document.getElementById('status-chip');
   const statusDot = document.getElementById('status-dot');
   const statusLabel = document.getElementById('status-label');
   const captionEl = document.getElementById('whisper-caption');
@@ -117,20 +122,32 @@
   const personaTaglineEl = document.getElementById('persona-tagline');
 
   // ---------------------------------------------------------------------
-  // Status indicator (tiny, top-right — never intrusive)
+  // Status indicator (tiny, top-right — never intrusive).
+  // While whispering, the chip is clickable so the user can cut off speech
+  // early (especially long InnerRap karaoke performances).
   // ---------------------------------------------------------------------
   const STATUS_STYLES = {
     listening: { dot: 'bg-neutral-600', animate: false, label: 'listening' },
     thinking: { dot: 'bg-amber-400', animate: true, label: 'thinking' },
     whispering: { dot: 'bg-emerald-400', animate: true, label: 'whispering' },
   };
+  let currentStatus = 'listening';
 
   function setStatus(state) {
-    const style = STATUS_STYLES[state] || STATUS_STYLES.listening;
+    currentStatus = STATUS_STYLES[state] ? state : 'listening';
+    const style = STATUS_STYLES[currentStatus];
     statusDot.className = `w-1.5 h-1.5 rounded-full transition-colors ${style.dot} ${
       style.animate ? 'animate-pulse-soft' : ''
     }`;
     statusLabel.textContent = style.label;
+    if (statusChip) {
+      const stoppable = currentStatus === 'whispering';
+      statusChip.title = stoppable ? 'Click to stop' : '';
+      statusChip.setAttribute('aria-label', stoppable ? 'Stop InnerVoice' : style.label);
+      statusChip.classList.toggle('cursor-pointer', stoppable);
+      statusChip.classList.toggle('hover:text-neutral-300', stoppable);
+      statusChip.classList.toggle('cursor-default', !stoppable);
+    }
   }
 
   let captionTimer = null;
@@ -311,6 +328,14 @@
     return Math.min(max, Math.max(min, offset));
   }
 
+  const rapSongBtn = document.getElementById('rap-song-btn');
+
+  function updateRapSongButton() {
+    if (!rapSongBtn) return;
+    const isRap = currentPersonaId() === 'rap';
+    rapSongBtn.classList.toggle('hidden', !isRap);
+  }
+
   function applyPersona(index, { silent = false } = {}) {
     const clamped = Math.max(0, Math.min(personas.length - 1, index));
     personaIndex = clamped;
@@ -320,6 +345,7 @@
     liveOffset = offsetForIndex(personaIndex);
     personaCarouselTrackEl.style.transform = `translateY(${liveOffset}px)`;
     if (!silent) showPersonaTagline(persona.tagline);
+    updateRapSongButton();
 
     try {
       window.localStorage.setItem(PERSONA_STORAGE_KEY, String(personaIndex));
@@ -755,6 +781,19 @@
       predictedText = encodedPrediction;
     }
 
+    // InnerEnsemble: backend auto-picked which concrete persona chimed in.
+    // Snap the carousel to that persona so the change is visible (no
+    // "Ensemble → Mentor" subtext) -- user can drag back to Ensemble anytime.
+    const activePersonaId = response.headers.get('X-Active-Persona') || personaId;
+    if (personaId === 'ensemble' && activePersonaId && activePersonaId !== 'ensemble') {
+      const nextIndex = personas.findIndex((p) => p && p.id === activePersonaId);
+      if (nextIndex >= 0 && nextIndex !== personaIndex) {
+        // Silent: don't flash a second tagline over the whisper; the
+        // carousel motion itself is the signal that Ensemble switched.
+        applyPersona(nextIndex, { silent: true });
+      }
+    }
+
     if (appConfig.enableWhisperMemory && predictedText) {
       whisperHistory.push(predictedText);
       if (whisperHistory.length > WHISPER_HISTORY_MAX) whisperHistory.shift();
@@ -767,7 +806,7 @@
     } else {
       showCaptionInstant(predictedText);
     }
-    activeWhisper = { token, personaId, predictedText };
+    activeWhisper = { token, personaId: activePersonaId, predictedText };
 
     await player.playStream(
       response,
@@ -775,7 +814,11 @@
       () => {
         if (!isStale()) {
           if (activeWhisper && activeWhisper.token === token) {
-            reportEvent('whisper_completed', { persona: personaId, predicted_text: predictedText });
+            reportEvent('whisper_completed', {
+              persona: activePersonaId,
+              requested_persona: personaId,
+              predicted_text: predictedText,
+            });
             activeWhisper = null;
           }
           setStatus('listening');
@@ -821,7 +864,227 @@
     }, DEBOUNCE_MS);
   });
 
+  // ---------------------------------------------------------------------
+  // InnerRap karaoke performance: keep the original draft in #editor,
+  // render lyrics as word spans below, scroll into view, and highlight
+  // each word in sync with the cloned-voice playback (same alignment
+  // machinery as the voice-match test).
+  // ---------------------------------------------------------------------
+  const rapPerformanceEl = document.getElementById('rap-performance');
+  const rapLyricsEl = document.getElementById('rap-lyrics');
+  let rapAudioEl = null;
+  let rapAudioUrl = null;
+  let rapRafId = null;
+  let rapWords = []; // [{text, start, end}]
+  let rapLastActiveIndex = -1;
+
+  function stopRapPerformance() {
+    if (rapRafId) {
+      cancelAnimationFrame(rapRafId);
+      rapRafId = null;
+    }
+    if (rapAudioEl) {
+      try {
+        rapAudioEl.pause();
+      } catch {
+        /* no-op */
+      }
+      rapAudioEl = null;
+    }
+    if (rapAudioUrl) {
+      URL.revokeObjectURL(rapAudioUrl);
+      rapAudioUrl = null;
+    }
+    rapLastActiveIndex = -1;
+    if (rapLyricsEl) {
+      rapLyricsEl.querySelectorAll('.rap-word.active').forEach((el) => el.classList.remove('active'));
+    }
+  }
+
+  function base64ToBlobUrl(base64, mime) {
+    const byteChars = atob(base64);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    const blob = new Blob([new Uint8Array(byteNumbers)], { type: mime });
+    return URL.createObjectURL(blob);
+  }
+
+  function renderRapLyrics(lyrics, words) {
+    if (!rapLyricsEl) return;
+    rapLyricsEl.innerHTML = '';
+    rapWords = words || [];
+    let wordIdx = 0;
+    // Preserve verse line breaks for readability; word indices still line up
+    // with TTS alignment (whitespace-delimited, newlines count as whitespace).
+    lyrics.split('\n').forEach((line) => {
+      const lineEl = document.createElement('p');
+      lineEl.className = 'mb-3 min-h-[1.2em]';
+      const trimmed = line.trim();
+      if (!trimmed) {
+        rapLyricsEl.appendChild(lineEl);
+        return;
+      }
+      trimmed.split(/\s+/).forEach((fallback, i) => {
+        if (i > 0) lineEl.appendChild(document.createTextNode(' '));
+        const span = document.createElement('span');
+        span.className = 'rap-word';
+        span.dataset.index = String(wordIdx);
+        span.textContent = (rapWords[wordIdx] && rapWords[wordIdx].text) || fallback;
+        wordIdx += 1;
+        lineEl.appendChild(span);
+      });
+      rapLyricsEl.appendChild(lineEl);
+    });
+  }
+
+  function startRapHighlightLoop() {
+    if (!rapLyricsEl) return;
+    const spans = rapLyricsEl.querySelectorAll('.rap-word');
+    const tick = () => {
+      if (!rapAudioEl) return;
+      const t = rapAudioEl.currentTime;
+      let activeIndex = -1;
+      for (let i = 0; i < rapWords.length; i++) {
+        if (t >= rapWords[i].start && t < rapWords[i].end) {
+          activeIndex = i;
+          break;
+        }
+      }
+      if (activeIndex !== rapLastActiveIndex) {
+        if (rapLastActiveIndex >= 0 && spans[rapLastActiveIndex]) {
+          spans[rapLastActiveIndex].classList.remove('active');
+        }
+        if (activeIndex >= 0 && spans[activeIndex]) {
+          spans[activeIndex].classList.add('active');
+          spans[activeIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        rapLastActiveIndex = activeIndex;
+      }
+      if (rapAudioEl && !rapAudioEl.ended && !rapAudioEl.paused) {
+        rapRafId = requestAnimationFrame(tick);
+      } else {
+        rapRafId = null;
+      }
+    };
+    rapRafId = requestAnimationFrame(tick);
+  }
+
+  async function playRapPerformance({ lyrics, audio_base64, words, pitch_playback_rate }) {
+    if (!rapPerformanceEl || !rapLyricsEl) return;
+    stopRapPerformance();
+    // Pause the ordinary whisper loop so it doesn't fight the performance.
+    invalidatePreviousRequest();
+    player.stop({ fade: true });
+
+    renderRapLyrics(lyrics, words);
+    rapPerformanceEl.classList.remove('hidden');
+    // Auto-scroll to the rapping section; original draft stays above in #editor.
+    rapPerformanceEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    rapAudioUrl = base64ToBlobUrl(audio_base64, 'audio/mpeg');
+    rapAudioEl = new Audio(rapAudioUrl);
+    const rate = typeof pitch_playback_rate === 'number' ? pitch_playback_rate : 1.0;
+    rapAudioEl.preservesPitch = false;
+    rapAudioEl.mozPreservesPitch = false;
+    rapAudioEl.webkitPreservesPitch = false;
+    rapAudioEl.playbackRate = rate;
+
+    rapAudioEl.addEventListener('ended', () => {
+      stopRapPerformance();
+      setStatus('listening');
+    });
+
+    setStatus('whispering');
+    try {
+      await rapAudioEl.play();
+      startRapHighlightLoop();
+    } catch (err) {
+      console.warn('[InnerVoice] rap performance playback failed', err);
+      setStatus('listening');
+    }
+  }
+
   setStatus('listening');
   loadConfig();
+  if (rapSongBtn) {
+    rapSongBtn.addEventListener('click', async () => {
+      const draft = editor.value.trim();
+      if (draft.length < 40) {
+        showPersonaTagline('Write a bit more first — then we can make a song.');
+        return;
+      }
+      rapSongBtn.disabled = true;
+      rapSongBtn.textContent = 'writing the song…';
+      stopRapPerformance();
+      try {
+        const response = await fetch(RAP_SONG_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: draft }),
+        });
+        if (!response.ok) {
+          let detail = 'Could not make a song just now.';
+          try {
+            const body = await response.json();
+            detail = body.detail || detail;
+          } catch {
+            /* no-op */
+          }
+          showPersonaTagline(detail);
+          return;
+        }
+        const body = await response.json();
+        const lyrics = (body.lyrics || '').trim();
+        if (!lyrics || !body.audio_base64) {
+          showPersonaTagline('Song came back empty — try again with more writing.');
+          return;
+        }
+        // Original draft stays untouched in #editor; lyrics live in the
+        // karaoke pane below and get rapped with word highlighting.
+        rapSongBtn.textContent = 'rapping…';
+        await playRapPerformance(body);
+        reportEvent('rap_song_generated', {
+          chars: lyrics.length,
+          words: (body.words || []).length,
+        });
+      } catch (err) {
+        console.warn('[InnerVoice] rap song request failed', err);
+        showPersonaTagline('Could not reach the song endpoint.');
+      } finally {
+        rapSongBtn.disabled = false;
+        rapSongBtn.textContent = 'make a rap song';
+      }
+    });
+  }
+
+  // Typing during a rap performance cancels it (typing always wins).
+  editor.addEventListener('input', () => {
+    if (rapAudioEl) stopRapPerformance();
+  });
+
+  /** Hard-stop every InnerVoice output: rap karaoke, streamed whisper audio,
+   * in-flight predicts, and Echo Mode typing. Partial echo text already in
+   * the editor is kept (committed); only speaking/animation is cut. */
+  function stopInnerVoice() {
+    if (rapAudioEl) stopRapPerformance();
+    invalidatePreviousRequest();
+    player.stop({ fade: false });
+    cancelEchoReveal();
+    if (echoInsertion) {
+      commitEchoInsertion();
+    } else {
+      hideCaptionSoon();
+    }
+    setStatus('listening');
+  }
+
+  // Click "whispering" to stop InnerVoice in any mode (rap, ensemble, etc.).
+  if (statusChip) {
+    statusChip.addEventListener('click', () => {
+      if (currentStatus !== 'whispering') return;
+      stopInnerVoice();
+    });
+  }
+
   loadPersonas();
 })();

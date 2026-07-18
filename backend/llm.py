@@ -23,8 +23,13 @@ import logging
 import re
 
 from backend.config import get_settings
-from backend.personas import DEFAULT_PERSONA_ID, get_persona
-from backend.user_context import get_context_summary
+from backend.personas import (
+    DEFAULT_PERSONA_ID,
+    ENSEMBLE_CANDIDATE_IDS,
+    PERSONAS,
+    get_persona,
+)
+from backend.user_context import fact_count, get_context_summary
 
 logger = logging.getLogger("innervoice.llm")
 
@@ -44,7 +49,43 @@ def _strip_boilerplate(text: str) -> str:
     return text.strip()
 
 
-def target_word_range(input_word_count: int, *, is_opening: bool = False) -> tuple[int, int]:
+def _tokens_for_word_range(max_words: int) -> int:
+    """Give the model enough tokens to actually use its word budget."""
+    return max(40, min(120, max_words * 3 + 8))
+
+
+def is_grounded(input_word_count: int, history: list[str] | None = None) -> bool:
+    """
+    True once InnerVoice has enough signal to stop leaving blanks and start
+    finishing thoughts.
+
+    Early / stubby fragments stay open even if a persisted profile already
+    exists -- we still want to sense what *this* thought is. Grounding kicks
+    in when the current paragraph has taken shape, or when we both know a
+    little about them and they've written past a stub, or (with whisper
+    memory) after a couple of prior turns.
+    """
+    settings = get_settings()
+    # Always leave room on near-empty stubs; blanks are useful here.
+    if input_word_count < 12:
+        return False
+    if input_word_count >= settings.grounded_min_input_words:
+        return True
+    if fact_count() >= settings.grounded_min_facts:
+        return True
+    if settings.enable_whisper_memory and history:
+        recent = [h for h in history if h and str(h).strip()]
+        if len(recent) >= 2:
+            return True
+    return False
+
+
+def target_word_range(
+    input_word_count: int,
+    *,
+    is_opening: bool = False,
+    is_grounded: bool = False,
+) -> tuple[int, int]:
     """
     Adaptive whisper-duration knob (docs/research-roadmap.md #3): instead of
     always targeting a fixed 10-15 words, scale the target with how much the
@@ -58,6 +99,10 @@ def target_word_range(input_word_count: int, *, is_opening: bool = False) -> tup
     continuation, so it gets more room regardless of how few words the
     opener itself contains.
 
+    `is_grounded` raises the floor/cap to the grounded band so mid-session
+    whispers can finish a thought instead of staying stubby/open-ended.
+    Opening still wins when both would apply.
+
     Returns an (min_words, max_words) window -- a small band around the
     scaled target, rather than a single number -- so the model still has a
     little room, the same way the original "10 to 15" range did.
@@ -66,7 +111,10 @@ def target_word_range(input_word_count: int, *, is_opening: bool = False) -> tup
     if is_opening:
         return settings.opening_min_words, settings.opening_max_words
 
-    floor, cap = settings.min_continuation_words, settings.max_continuation_words
+    if is_grounded:
+        floor, cap = settings.grounded_min_words, settings.grounded_max_words
+    else:
+        floor, cap = settings.min_continuation_words, settings.max_continuation_words
 
     if settings.duration_words_per_input_word <= 0:
         return floor, cap
@@ -76,7 +124,12 @@ def target_word_range(input_word_count: int, *, is_opening: bool = False) -> tup
 
     band = 2
     min_words = max(floor, target - band)
-    max_words = min(cap, max(min_words, target))
+    if is_grounded:
+        # Keep the full grounded ceiling available so the model can actually
+        # land the thought, not just nudge one short half-step forward.
+        max_words = cap
+    else:
+        max_words = min(cap, max(min_words, target))
     return min_words, max_words
 
 
@@ -117,43 +170,163 @@ def _with_whisper_memory(context: str, history: list[str] | None) -> str:
     return f"[Already whispered earlier in this session, do not repeat: {memory_note}]\n\n{context}"
 
 
+_ENSEMBLE_PICK_PROMPT = """\
+You choose which inner-voice persona should chime in next to help this
+person most, based only on what they're writing right now (and any
+background notes). Reply with ONLY one of these ids, nothing else:
+{candidates}
+
+Quick guide:
+- voice: intuitive next thought, slight insight
+- mentor: clarity, growth, next steps
+- friend: warmth, validation
+- demon: sharp self-critique (never harmful)
+- future_self: lived perspective from later on their timeline
+- absent: absent-minded loop -- no new angle, just keep the existing thought circling
+"""
+
+
+async def select_ensemble_persona(context: str) -> str:
+    """
+    Pick which concrete persona InnerEnsemble should use for this turn.
+    Falls back to the default voice on any failure so Ensemble never 500s.
+    """
+    candidates = ", ".join(ENSEMBLE_CANDIDATE_IDS)
+    system = _ENSEMBLE_PICK_PROMPT.format(candidates=candidates)
+    settings = get_settings()
+    try:
+        provider = settings.resolved_llm_provider
+    except RuntimeError:
+        return DEFAULT_PERSONA_ID
+
+    prompt = _with_user_context(context.strip() or "(empty)")
+    try:
+        if provider == "openai":
+            raw = await _generate_openai(prompt, system, max_tokens=8, temperature=0.2)
+        else:
+            raw = await _generate_anthropic(prompt, system, max_tokens=8, temperature=0.2)
+    except Exception:
+        logger.exception("Ensemble persona selection failed")
+        return DEFAULT_PERSONA_ID
+
+    choice = re.sub(r"[^a-z_]", "", (raw or "").strip().lower().split()[0] if raw else "")
+    if choice in ENSEMBLE_CANDIDATE_IDS:
+        return choice
+    for candidate in ENSEMBLE_CANDIDATE_IDS:
+        if candidate in (raw or "").lower():
+            return candidate
+    return DEFAULT_PERSONA_ID
+
+
+async def resolve_active_persona(persona_id: str, context: str) -> str:
+    """Map a requested persona id to the one that will actually generate."""
+    if persona_id == "ensemble" or get_persona(persona_id).auto_select:
+        return await select_ensemble_persona(context)
+    if persona_id in PERSONAS:
+        return persona_id
+    return DEFAULT_PERSONA_ID
+
+
 async def generate_continuation(
     context: str,
     persona_id: str = DEFAULT_PERSONA_ID,
     history: list[str] | None = None,
     *,
     is_opening: bool = False,
-) -> tuple[str, tuple[int, int]]:
-    """Return a (continuation_text, (min_words, max_words)) pair, where the
-    continuation is a short, length-adaptive completion of `context`,
-    steered by the given persona's system prompt. Returns ("", word_range)
-    on failure so callers can still log the target range that was tried.
+) -> tuple[str, tuple[int, int], str]:
+    """Return (continuation_text, (min_words, max_words), active_persona_id).
+
+    `active_persona_id` is usually the requested persona, except for
+    InnerEnsemble which auto-picks a concrete candidate. Returns
+    ("", word_range, active_id) on failure so callers can still log.
 
     `history` (recent past whispered continuations, oldest first) is only
     used when ENABLE_WHISPER_MEMORY is on -- see `_with_whisper_memory`.
     `is_opening` (roadmap #11) marks the very first whisper of a session,
     completing the guided opener right after voice calibration -- it gets a
     roomier word budget and an extra system-prompt nudge to actually use
-    whatever context is available, rather than reacting generically."""
+    whatever context is available, rather than reacting generically.
+
+    Once enough signal has accumulated (`is_grounded`), ordinary turns also
+    get a roomier budget plus a nudge to *finish* the thought instead of
+    leaving another open blank -- see `is_grounded` / grounded word knobs."""
     settings = get_settings()
     provider = settings.resolved_llm_provider
+    active_persona_id = await resolve_active_persona(persona_id, context)
     # Word-count target is based on the user's actual input, not the
     # memory-augmented prompt, so past whispers don't skew the target length.
-    word_range = target_word_range(len(context.split()), is_opening=is_opening)
-    system_prompt = get_persona(persona_id).render_system_prompt(*word_range, is_opening=is_opening)
+    input_words = len(context.split())
+    grounded = (not is_opening) and is_grounded(input_words, history)
+    word_range = target_word_range(
+        input_words, is_opening=is_opening, is_grounded=grounded
+    )
+    # Opening / grounded insight nudges don't apply to absent-minded looping.
+    use_opening = is_opening and active_persona_id != "absent"
+    use_grounded = grounded and active_persona_id != "absent"
+    if use_grounded:
+        logger.info(
+            "Grounded completion mode (%d input words, %d facts) → %d-%d words",
+            input_words,
+            fact_count(),
+            *word_range,
+        )
+    system_prompt = get_persona(active_persona_id).render_system_prompt(
+        *word_range, is_opening=use_opening, is_grounded=use_grounded
+    )
     llm_input = _with_whisper_memory(_with_user_context(context), history)
+    max_tokens = _tokens_for_word_range(word_range[1])
 
     try:
         if provider == "openai":
-            raw = await _generate_openai(llm_input, system_prompt)
+            raw = await _generate_openai(llm_input, system_prompt, max_tokens=max_tokens)
         else:
-            raw = await _generate_anthropic(llm_input, system_prompt)
+            raw = await _generate_anthropic(llm_input, system_prompt, max_tokens=max_tokens)
     except Exception:
         logger.exception("LLM completion failed (provider=%s)", provider)
-        return "", word_range
+        return "", word_range, active_persona_id
 
     cleaned = _clamp_words(_strip_boilerplate(raw), word_range[1])
-    return cleaned, word_range
+    return cleaned, word_range, active_persona_id
+
+
+_RAP_SONG_PROMPT = """\
+You are InnerRap's songwriting pass. The user has been freewriting; turn
+their material into a short original rap song in their voice.
+
+Rules:
+- Output ONLY the lyrics (no title preamble like "Sure, here's a song").
+- Structure: optional short title line, then 2 verses and a chorus (label
+  them Verse 1 / Chorus / Verse 2 / Chorus).
+- Keep it under ~180 words. Rhyme and rhythm matter, but meaning first.
+- Stay first-person, grounded in what they actually wrote -- invent lightly
+  for flow, never invent a whole new life story.
+- No self-harm, violence, or hateful content.
+"""
+
+
+async def generate_rap_song(document_text: str) -> str:
+    """Assemble a short rap song from the user's accumulated writing."""
+    text = (document_text or "").strip()
+    if len(text) < 20:
+        return ""
+
+    settings = get_settings()
+    try:
+        provider = settings.resolved_llm_provider
+    except RuntimeError:
+        return ""
+
+    prompt = _with_user_context(text[:4000])
+    try:
+        if provider == "openai":
+            raw = await _generate_openai(prompt, _RAP_SONG_PROMPT, max_tokens=400, temperature=0.95)
+        else:
+            raw = await _generate_anthropic(prompt, _RAP_SONG_PROMPT, max_tokens=400, temperature=1.0)
+    except Exception:
+        logger.exception("Rap song generation failed")
+        return ""
+
+    return _strip_boilerplate(raw).strip()
 
 
 _EXTRACTION_SYSTEM_PROMPT = """\

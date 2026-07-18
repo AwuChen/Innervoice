@@ -112,6 +112,15 @@
       color: #e5c98f; /* matches the editor's caret-gold accent */
     }
 
+    /* InnerRap karaoke performance pane (see frontend/app.js). */
+    #rap-lyrics .rap-word {
+      transition: color 0.12s ease-out;
+      color: #a3a3a3;
+    }
+    #rap-lyrics .rap-word.active {
+      color: #e5c98f;
+    }
+
     .voice-match-chip {
       cursor: pointer;
       user-select: none;
@@ -135,10 +144,14 @@
       id="retest-voice-link"
       class="hidden text-neutral-600 hover:text-neutral-400 transition-colors underline-offset-2 hover:underline"
     >retest my voice</button>
-    <span class="flex items-center gap-2">
+    <button
+      id="status-chip"
+      type="button"
+      class="flex items-center gap-2 rounded-sm transition-colors cursor-default"
+    >
       <span id="status-dot" class="w-1.5 h-1.5 rounded-full bg-neutral-600 transition-colors"></span>
       <span id="status-label">listening</span>
-    </span>
+    </button>
   </div>
 
   <main class="w-full max-w-2xl px-8 flex flex-col items-center">
@@ -221,6 +234,20 @@
       placeholder="Begin writing…"
       spellcheck="false"
     ></textarea>
+
+    <!-- InnerRap performance: original draft stays in #editor above; lyrics
+         appear here with karaoke word-highlight while the cloned voice raps. -->
+    <section
+      id="rap-performance"
+      class="hidden w-full mt-10 pt-8 border-t border-neutral-800/80 scroll-mt-24"
+      aria-live="polite"
+    >
+      <p class="text-[11px] tracking-wide text-neutral-600 uppercase mb-4 select-none">now rapping</p>
+      <div
+        id="rap-lyrics"
+        class="text-2xl leading-relaxed font-serif text-neutral-300 tracking-wide"
+      ></div>
+    </section>
   </main>
 
   <!-- Subtle whisper caption: the last phrase InnerVoice spoke.
@@ -237,6 +264,16 @@
     class="fixed bottom-10 left-1/2 -translate-x-1/2 max-w-xl text-center
            text-sm text-neutral-500 italic opacity-0 transition-opacity duration-700 select-none px-6"
   ></div>
+
+  <!-- InnerRap: assemble the freewrite into a short song (only shown on Rap).
+       Anchored bottom-left so it doesn't collide with the center caption. -->
+  <button
+    id="rap-song-btn"
+    type="button"
+    class="hidden fixed bottom-10 left-6 px-4 py-1.5 rounded-full
+           border border-neutral-700 text-neutral-400 text-xs tracking-wide
+           hover:border-neutral-500 hover:text-neutral-200 transition-colors"
+  >make a rap song</button>
 
   <script src="voice-gate.js"></script>
   <script src="voice-match.js"></script>

@@ -32,6 +32,10 @@ Env vars:
     ENABLE_CONTEXT_EXTRACTION - default: true (research knob, see below)
     OPENING_MIN_WORDS       - default: 15   (research knob, see below)
     OPENING_MAX_WORDS       - default: 35   (research knob, see below)
+    GROUNDED_MIN_WORDS      - default: 10   (research knob, see below)
+    GROUNDED_MAX_WORDS      - default: 28   (research knob, see below)
+    GROUNDED_MIN_FACTS      - default: 2    (research knob, see below)
+    GROUNDED_MIN_INPUT_WORDS - default: 35  (research knob, see below)
     VOICE_TEST_PREROLL_MS   - default: 600   (voice-match test, see below)
     CORS_ORIGINS            - comma-separated list, default: "*"
 
@@ -66,6 +70,13 @@ Env vars:
       guided "I feel ___" opener right after voice calibration) more room
       than the usual adaptive length, since a real reflection needs more
       than a few words -- see roadmap #11.
+    - GROUNDED_* knobs control the mid-session shift from open, blank-
+      leaving whispers (good early, while sensing the person) to fuller
+      thought-completions once enough signal has accumulated. A turn is
+      "grounded" when fact_count >= GROUNDED_MIN_FACTS or the current
+      paragraph has >= GROUNDED_MIN_INPUT_WORDS; grounded turns use the
+      roomier GROUNDED_MIN_WORDS/GROUNDED_MAX_WORDS band and a prompt
+      nudge to finish the thought rather than leave another blank.
 """
 
 from __future__ import annotations
@@ -122,6 +133,14 @@ class Settings(BaseSettings):
     enable_context_extraction: bool = True
     opening_min_words: int = 15
     opening_max_words: int = 35
+
+    # Mid-session "finish the thought" mode: once enough profile facts or
+    # paragraph length have accumulated, raise the word budget and steer
+    # away from trailing blanks (see personas._GROUNDED_TURN_ADDENDUM).
+    grounded_min_words: int = 10
+    grounded_max_words: int = 28
+    grounded_min_facts: int = 2
+    grounded_min_input_words: int = 35
 
     # --- Voice-match test (see docs/research-roadmap.md) ---
     # Delay between the user tapping "Begin" on the first-run voice-match
