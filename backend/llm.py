@@ -35,12 +35,25 @@ logger = logging.getLogger("innervoice.llm")
 
 
 def _clamp_words(text: str, max_words: int) -> str:
-    """Hard safety net in case the model ignores the word-count instruction."""
+    """Hard safety net in case the model ignores the word-count instruction.
+
+    Prefer ending on a natural break (sentence / clause) so a length clamp
+    doesn't re-introduce the trailing blank we're trying to avoid."""
     text = text.strip().strip('"').strip("'").strip()
     words = text.split()
-    if len(words) > max_words:
-        text = " ".join(words[:max_words])
-    return text
+    if len(words) <= max_words:
+        return text
+
+    clipped = " ".join(words[:max_words])
+    # Walk back to the latest terminal punctuation so we don't cut mid-clause.
+    best = -1
+    for marker in (".", "!", "?", ";", "—"):
+        idx = clipped.rfind(marker)
+        if idx > best:
+            best = idx
+    if best >= max(12, len(clipped) // 3):
+        return clipped[: best + 1].strip()
+    return clipped
 
 
 def _strip_boilerplate(text: str) -> str:
@@ -112,9 +125,11 @@ def target_word_range(
         return settings.opening_min_words, settings.opening_max_words
 
     if is_grounded:
-        floor, cap = settings.grounded_min_words, settings.grounded_max_words
-    else:
-        floor, cap = settings.min_continuation_words, settings.max_continuation_words
+        # Full grounded band (not a skinny high slice): forcing 26-28 words
+        # makes the model pad and trail off instead of landing cleanly.
+        return settings.grounded_min_words, settings.grounded_max_words
+
+    floor, cap = settings.min_continuation_words, settings.max_continuation_words
 
     if settings.duration_words_per_input_word <= 0:
         return floor, cap
@@ -124,12 +139,7 @@ def target_word_range(
 
     band = 2
     min_words = max(floor, target - band)
-    if is_grounded:
-        # Keep the full grounded ceiling available so the model can actually
-        # land the thought, not just nudge one short half-step forward.
-        max_words = cap
-    else:
-        max_words = min(cap, max(min_words, target))
+    max_words = min(cap, max(min_words, target))
     return min_words, max_words
 
 
@@ -291,13 +301,18 @@ async def generate_continuation(
 
 _RAP_SONG_PROMPT = """\
 You are InnerRap's songwriting pass. The user has been freewriting; turn
-their material into a short original rap song in their voice.
+their material into a short original rap song in their voice -- written to
+be SPOKEN fast, with pocket and bounce, not read like prose.
 
 Rules:
-- Output ONLY the lyrics (no title preamble like "Sure, here's a song").
-- Structure: optional short title line, then 2 verses and a chorus (label
-  them Verse 1 / Chorus / Verse 2 / Chorus).
-- Keep it under ~180 words. Rhyme and rhythm matter, but meaning first.
+- Output ONLY the lyrics (no preamble like "Sure, here's a song").
+- Structure ONLY: Verse 1 / Chorus / Verse 2 / Chorus (those four labels,
+  each on its own line). No title line.
+- Each bar on its own line. Aim for ~6-12 words per bar, similar length
+  line-to-line so the cadence stays even when rapped aloud.
+- End-rhyme and internal rhyme where natural; punch the line endings.
+- Prefer short clauses and hard consonants over long winding sentences.
+- Keep it under ~160 words. Meaning first, but rhythm is a close second.
 - Stay first-person, grounded in what they actually wrote -- invent lightly
   for flow, never invent a whole new life story.
 - No self-harm, violence, or hateful content.

@@ -909,27 +909,42 @@
     return URL.createObjectURL(blob);
   }
 
+  function isRapSectionLabel(line) {
+    return /^(verse\s*\d+|chorus|bridge|hook|outro|intro)\s*:?\s*$/i.test(line);
+  }
+
   function renderRapLyrics(lyrics, words) {
     if (!rapLyricsEl) return;
     rapLyricsEl.innerHTML = '';
+    // TTS speaks bars only (section labels stripped server-side). Display
+    // still shows Verse/Chorus headers without consuming word indices.
     rapWords = words || [];
     let wordIdx = 0;
-    // Preserve verse line breaks for readability; word indices still line up
-    // with TTS alignment (whitespace-delimited, newlines count as whitespace).
     lyrics.split('\n').forEach((line) => {
-      const lineEl = document.createElement('p');
-      lineEl.className = 'mb-3 min-h-[1.2em]';
       const trimmed = line.trim();
+      const lineEl = document.createElement('p');
       if (!trimmed) {
+        lineEl.className = 'mb-3 min-h-[0.6em]';
         rapLyricsEl.appendChild(lineEl);
         return;
       }
+      if (isRapSectionLabel(trimmed)) {
+        lineEl.className =
+          'mb-2 mt-5 text-[11px] tracking-wide text-neutral-600 uppercase select-none';
+        lineEl.textContent = trimmed;
+        rapLyricsEl.appendChild(lineEl);
+        return;
+      }
+      lineEl.className = 'mb-2 min-h-[1.2em]';
+      // Strip trailing bar-ending punctuation we may have added for TTS cadence
+      // from the visible fallback when the alignment word is missing.
       trimmed.split(/\s+/).forEach((fallback, i) => {
         if (i > 0) lineEl.appendChild(document.createTextNode(' '));
         const span = document.createElement('span');
         span.className = 'rap-word';
         span.dataset.index = String(wordIdx);
-        span.textContent = (rapWords[wordIdx] && rapWords[wordIdx].text) || fallback;
+        const aligned = rapWords[wordIdx] && rapWords[wordIdx].text;
+        span.textContent = (aligned || fallback).replace(/[.!?…]+$/u, '');
         wordIdx += 1;
         lineEl.appendChild(span);
       });
@@ -969,7 +984,13 @@
     rapRafId = requestAnimationFrame(tick);
   }
 
-  async function playRapPerformance({ lyrics, audio_base64, words, pitch_playback_rate }) {
+  async function playRapPerformance({
+    lyrics,
+    audio_base64,
+    words,
+    pitch_playback_rate,
+    preserve_pitch,
+  }) {
     if (!rapPerformanceEl || !rapLyricsEl) return;
     stopRapPerformance();
     // Pause the ordinary whisper loop so it doesn't fight the performance.
@@ -983,10 +1004,13 @@
 
     rapAudioUrl = base64ToBlobUrl(audio_base64, 'audio/mpeg');
     rapAudioEl = new Audio(rapAudioUrl);
-    const rate = typeof pitch_playback_rate === 'number' ? pitch_playback_rate : 1.0;
-    rapAudioEl.preservesPitch = false;
-    rapAudioEl.mozPreservesPitch = false;
-    rapAudioEl.webkitPreservesPitch = false;
+    // Rap songs: couple pitch to rate (preserve_pitch=false) so a rate
+    // below 1.0 deepens the voice into a more human lower register.
+    const keepPitch = preserve_pitch === true;
+    rapAudioEl.preservesPitch = keepPitch;
+    rapAudioEl.mozPreservesPitch = keepPitch;
+    rapAudioEl.webkitPreservesPitch = keepPitch;
+    const rate = typeof pitch_playback_rate === 'number' ? pitch_playback_rate : 0.92;
     rapAudioEl.playbackRate = rate;
 
     rapAudioEl.addEventListener('ended', () => {

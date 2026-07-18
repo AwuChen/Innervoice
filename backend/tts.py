@@ -37,24 +37,47 @@ _TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
 _TIMESTAMPS_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
 
 
-def _elevenlabs_voice_settings_payload() -> dict[str, Any]:
+# InnerRap delivery: a little quicker/punchier than the default whisper,
+# but still human — not maxed machine-gun speed. Client playback rate
+# below 1.0 (with pitch coupled) deepens the voice like a lower register.
+RAP_VOICE_OVERRIDES: dict[str, float] = {
+    "stability": 0.48,  # steadier, less chaotic than a hyper-styled read
+    "style": 0.28,  # light rhythmic color without sounding synthetic
+    "speed": 1.06,  # slight pocket, not ElevenLabs' 1.2 ceiling
+}
+# <1.0 with preserve_pitch=false → deeper + a touch slower (human register).
+RAP_SONG_PLAYBACK_RATE = 0.92
+
+
+def _elevenlabs_voice_settings_payload(overrides: dict[str, float] | None = None) -> dict[str, Any]:
     tuned = get_voice_settings()
-    return {
+    merged = {
         "stability": tuned["stability"],
         "similarity_boost": tuned["similarity_boost"],
         "style": tuned["style"],
         "speed": tuned["speed"],
+    }
+    if overrides:
+        merged.update({k: v for k, v in overrides.items() if k in merged})
+    # Hard clamp to ElevenLabs' accepted speed window.
+    merged["speed"] = max(0.7, min(1.2, float(merged["speed"])))
+    return {
+        **merged,
         "use_speaker_boost": True,
     }
 
 
-async def stream_speech(text: str) -> AsyncGenerator[bytes, None]:
+async def stream_speech(
+    text: str,
+    *,
+    voice_settings_overrides: dict[str, float] | None = None,
+) -> AsyncGenerator[bytes, None]:
     """Yield MP3 audio chunks for `text` as they arrive from the TTS provider."""
     settings = get_settings()
     provider = settings.resolved_tts_provider
 
     if provider == "elevenlabs":
-        generator = _stream_elevenlabs(text)
+        generator = _stream_elevenlabs(text, voice_settings_overrides=voice_settings_overrides)
     else:
         generator = _stream_cartesia(text)
 
@@ -63,7 +86,11 @@ async def stream_speech(text: str) -> AsyncGenerator[bytes, None]:
             yield chunk
 
 
-async def _stream_elevenlabs(text: str) -> AsyncGenerator[bytes, None]:
+async def _stream_elevenlabs(
+    text: str,
+    *,
+    voice_settings_overrides: dict[str, float] | None = None,
+) -> AsyncGenerator[bytes, None]:
     settings = get_settings()
     # Prefer the voice the user cloned for themselves during onboarding
     # (Instant Voice Clone); fall back to the static env-configured voice
@@ -85,7 +112,7 @@ async def _stream_elevenlabs(text: str) -> AsyncGenerator[bytes, None]:
     payload = {
         "text": text,
         "model_id": settings.elevenlabs_model,
-        "voice_settings": _elevenlabs_voice_settings_payload(),
+        "voice_settings": _elevenlabs_voice_settings_payload(voice_settings_overrides),
     }
 
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -98,7 +125,11 @@ async def _stream_elevenlabs(text: str) -> AsyncGenerator[bytes, None]:
                 yield chunk
 
 
-async def synthesize_with_timestamps(text: str) -> dict[str, Any]:
+async def synthesize_with_timestamps(
+    text: str,
+    *,
+    voice_settings_overrides: dict[str, float] | None = None,
+) -> dict[str, Any]:
     """
     Synthesize `text` and return `{"audio_base64": str, "words": [{"text",
     "start", "end"}]}` for the voice-match test's karaoke-style word
@@ -116,11 +147,17 @@ async def synthesize_with_timestamps(text: str) -> dict[str, Any]:
     settings = get_settings()
     provider = settings.resolved_tts_provider
     if provider == "elevenlabs":
-        return await _synthesize_elevenlabs_with_timestamps(text)
+        return await _synthesize_elevenlabs_with_timestamps(
+            text, voice_settings_overrides=voice_settings_overrides
+        )
     return await _synthesize_cartesia_estimated(text)
 
 
-async def _synthesize_elevenlabs_with_timestamps(text: str) -> dict[str, Any]:
+async def _synthesize_elevenlabs_with_timestamps(
+    text: str,
+    *,
+    voice_settings_overrides: dict[str, float] | None = None,
+) -> dict[str, Any]:
     settings = get_settings()
     # Prefer the user's Instant Voice Clone when present -- same voice the
     # live whisper stream uses (see _stream_elevenlabs).
@@ -137,7 +174,7 @@ async def _synthesize_elevenlabs_with_timestamps(text: str) -> dict[str, Any]:
     payload = {
         "text": text,
         "model_id": settings.elevenlabs_model,
-        "voice_settings": _elevenlabs_voice_settings_payload(),
+        "voice_settings": _elevenlabs_voice_settings_payload(voice_settings_overrides),
     }
 
     async with httpx.AsyncClient(timeout=_TIMESTAMPS_TIMEOUT) as client:

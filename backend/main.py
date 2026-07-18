@@ -40,7 +40,12 @@ from backend.llm import (
 from backend.passages import get_passage
 from backend.personas import DEFAULT_PERSONA_ID, PERSONAS, get_persona
 from backend.session_log import log_context_learned, log_event, log_predict, log_voice_feedback
-from backend.tts import stream_speech, synthesize_with_timestamps
+from backend.tts import (
+    RAP_SONG_PLAYBACK_RATE,
+    RAP_VOICE_OVERRIDES,
+    stream_speech,
+    synthesize_with_timestamps,
+)
 from backend.user_context import add_facts as add_context_facts, reset as reset_context
 from backend.voice_clone import (
     VoiceCloneError,
@@ -471,9 +476,15 @@ async def predict(request: PredictRequest, background_tasks: BackgroundTasks):
         source = "opening" if request.is_opening else "extraction"
         background_tasks.add_task(_extract_and_store_context, context, predicted_text, source)
 
+    # InnerRap live bars: push ElevenLabs toward a quicker, punchier delivery
+    # than the default whisper (full songs get an extra client-side tempo bump).
+    tts_overrides = RAP_VOICE_OVERRIDES if active_persona_id == "rap" else None
+
     async def audio_iterator():
         try:
-            async for chunk in stream_speech(predicted_text):
+            async for chunk in stream_speech(
+                predicted_text, voice_settings_overrides=tts_overrides
+            ):
                 yield chunk
         except Exception:
             # Client likely already got a partial stream; nothing more we can
@@ -493,6 +504,35 @@ async def predict(request: PredictRequest, background_tasks: BackgroundTasks):
 
 class RapSongRequest(BaseModel):
     text: str = Field(..., description="The user's accumulated writing to turn into a rap song.")
+
+
+_RAP_SECTION_LABEL_RE = re.compile(
+    r"^(verse\s*\d+|chorus|bridge|hook|outro|intro)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _prepare_rap_performance_text(lyrics: str) -> tuple[str, str]:
+    """
+    Split display lyrics from what TTS should actually speak.
+
+    Section labels (Verse 1 / Chorus / …) stay on screen for structure but
+    are stripped from the spoken track so they don't kill the pocket.
+    Remaining bars stay one-per-line; bare lines get a period so the model
+    lands each bar instead of reading the verse as one run-on sentence.
+    """
+    display = re.sub(r"\*+", "", lyrics or "").strip()
+    speak_lines: list[str] = []
+    for raw in display.split("\n"):
+        line = raw.strip()
+        if not line or _RAP_SECTION_LABEL_RE.match(line):
+            continue
+        if line[-1] not in ".!?…":
+            line = f"{line}."
+        speak_lines.append(line)
+    # Newlines between bars → brief pauses in ElevenLabs delivery.
+    speak_text = "\n".join(speak_lines).strip()
+    return display, speak_text
 
 
 @app.post("/api/rap-song")
@@ -516,24 +556,25 @@ async def rap_song(request: RapSongRequest) -> dict:
             detail="Need a bit more writing before a rap song can come together.",
         )
 
-    # Strip light markdown the model sometimes adds (**title**) so TTS
-    # alignment stays 1:1 with what we highlight on screen.
-    speak_text = re.sub(r"\*+", "", lyrics).strip()
+    display_lyrics, speak_text = _prepare_rap_performance_text(lyrics)
     if not speak_text:
         raise HTTPException(status_code=422, detail="Song came back empty.")
 
     try:
-        spoken = await synthesize_with_timestamps(speak_text)
+        spoken = await synthesize_with_timestamps(
+            speak_text, voice_settings_overrides=RAP_VOICE_OVERRIDES
+        )
     except Exception as exc:
         logger.exception("Rap song TTS failed")
         raise HTTPException(status_code=502, detail="Could not voice the rap song.") from exc
 
-    tuned = get_voice_settings()
     return {
-        "lyrics": speak_text,
+        "lyrics": display_lyrics,
         "audio_base64": spoken["audio_base64"],
         "words": spoken["words"],
-        "pitch_playback_rate": tuned["pitch_playback_rate"],
+        # Slightly slowed playback deepens the voice (pitch follows rate).
+        "pitch_playback_rate": RAP_SONG_PLAYBACK_RATE,
+        "preserve_pitch": False,
     }
 
 
